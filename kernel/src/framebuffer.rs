@@ -82,7 +82,7 @@ impl Display {
             let glyph = FONT.get(ch as usize).unwrap_or(&FONT[b'?' as usize]);
             for (row, &bits) in glyph.iter().enumerate() {
                 for col in 0..8usize {
-                    if bits & (0x80 >> col) != 0 {
+                    if bits & (1 << col) != 0 {
                         self.fill_rect(
                             cx + col * scale,
                             y + row * scale,
