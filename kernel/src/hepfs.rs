@@ -360,6 +360,52 @@ pub fn write_file(ctrl: &mut NvmeController, ino: u32, data: &[u8]) {
     write_inode(ctrl, ino, &inode);
 }
 
+/// Remove a file or empty directory from its parent. Returns true on success.
+pub fn remove(ctrl: &mut NvmeController, parent_ino: u32, name: &str) -> bool {
+    let ino = match find_in_dir(ctrl, parent_ino, name) {
+        Some(i) => i,
+        None    => return false,
+    };
+    let inode = read_inode(ctrl, ino);
+
+    // Don't remove root or non-empty dirs
+    if ino == ROOT_INO { return false; }
+    if inode.flags == F_DIR && !list_dir(ctrl, ino).is_empty() { return false; }
+
+    // Free data blocks
+    for &blk in inode.direct.iter().filter(|&&b| b != 0) {
+        bitmap_set(ctrl, BLOCK_BM_BLOCK, blk as u64, false);
+    }
+
+    // Free inode
+    bitmap_set(ctrl, INODE_BM_BLOCK, ino as u64, false);
+    let mut freed = Inode::default();
+    freed.flags = F_FREE;
+    write_inode(ctrl, ino, &freed);
+
+    // Remove dir entry from parent
+    let parent = read_inode(ctrl, parent_ino);
+    for &blk in parent.direct.iter().filter(|&&b| b != 0) {
+        let page = read_block(ctrl, blk as u64);
+        let buf  = page.as_mut_slice();
+        for i in 0..ENTRIES_PER_BLK {
+            let ep = unsafe { buf.as_mut_ptr().add(i * DIR_ENTRY_SIZE) as *mut DirEntry };
+            if unsafe { (*ep).inode } == ino {
+                unsafe { *ep = DirEntry { inode: 0, name_len: 0, name: [0; 27] }; }
+                write_block(ctrl, blk as u64, &page);
+                return true;
+            }
+        }
+    }
+    true
+}
+
+/// Lookup an entry by name in a directory. Returns (inode_id, is_dir).
+pub fn stat(ctrl: &mut NvmeController, ino: u32) -> (bool, u64) {
+    let inode = read_inode(ctrl, ino);
+    (inode.flags == F_DIR, inode.size)
+}
+
 /// Read all data from a file. Returns a Vec<u8>.
 pub fn read_file(ctrl: &mut NvmeController, ino: u32) -> Vec<u8> {
     let inode = read_inode(ctrl, ino);

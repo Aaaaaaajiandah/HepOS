@@ -32,14 +32,15 @@ impl Cell {
 }
 
 pub struct Terminal {
-    // Ring buffer of lines
     lines:      Vec<[Cell; COLS]>,
-    col:        usize,     // cursor column
-    row:        usize,     // cursor row (0 = top visible)
+    col:        usize,
+    row:        usize,
     pub dirty:  bool,
-    // Simple command buffer for "shell"
     cmd_buf:    String,
-    prompt_row: usize,     // row where the current prompt is
+    prompt_row: usize,
+    // Shell state
+    cwd_ino:    u32,
+    cwd_path:   String,
 }
 
 impl Terminal {
@@ -51,11 +52,10 @@ impl Terminal {
         }
         let mut t = Terminal {
             lines,
-            col: 0,
-            row: 0,
-            dirty: true,
-            cmd_buf: String::new(),
-            prompt_row: 0,
+            col: 0, row: 0, dirty: true,
+            cmd_buf: String::new(), prompt_row: 0,
+            cwd_ino: crate::hepfs::ROOT_INO,
+            cwd_path: String::from("/"),
         };
         t.print_colored("HepOS Terminal v0.1\n", OK);
         t.print_colored("Type 'help' for commands\n\n", DIM);
@@ -64,7 +64,7 @@ impl Terminal {
     }
 
     fn show_prompt(&mut self) {
-        self.print_colored("hepos> ", CURSOR);
+        self.print_colored(&alloc::format!("{} $ ", self.cwd_path), CURSOR);
         self.prompt_row = self.row;
     }
 
@@ -144,36 +144,172 @@ impl Terminal {
     }
 
     fn execute(&mut self, cmd: &str) {
-        match cmd {
+        let parts: alloc::vec::Vec<&str> = cmd.splitn(3, ' ').collect();
+        let verb = parts.first().copied().unwrap_or("");
+        let arg1 = parts.get(1).copied().unwrap_or("");
+        let arg2 = parts.get(2).copied().unwrap_or("");
+
+        match verb {
             "" => {}
 
             "help" => {
                 self.print_colored("Commands:\n", OK);
-                self.print("  help     - this message\n");
-                self.print("  clear    - clear screen\n");
-                self.print("  ls       - list / directory\n");
-                self.print("  uname    - system info\n");
-                self.print("  mem      - memory usage\n");
-                self.print("  shutdown - power off\n");
-                self.print("  reboot   - reboot\n");
-                self.print("  echo ... - print text\n");
+                let cmds = [
+                    ("help",           "this message"),
+                    ("clear",          "clear screen"),
+                    ("pwd",            "print working directory"),
+                    ("ls [path]",      "list directory"),
+                    ("cd <dir>",       "change directory"),
+                    ("cat <file>",     "print file contents"),
+                    ("mkdir <name>",   "create directory"),
+                    ("touch <name>",   "create empty file"),
+                    ("rm <name>",      "remove file or empty dir"),
+                    ("write <f> <txt>","write text to file"),
+                    ("uname",          "system info"),
+                    ("mem",            "memory usage"),
+                    ("shutdown",       "power off (ACPI)"),
+                    ("reboot",         "reboot"),
+                    ("echo <text>",    "print text"),
+                ];
+                for (name, desc) in &cmds {
+                    self.print_colored("  ", DIM);
+                    self.print_colored(name, TEXT);
+                    self.print_colored(" - ", DIM);
+                    self.print(desc);
+                    self.print("\n");
+                }
             }
 
             "clear" => {
-                for line in &mut self.lines {
-                    *line = [Cell::blank(); COLS];
+                for line in &mut self.lines { *line = [Cell::blank(); COLS]; }
+                self.col = 0; self.row = 0;
+            }
+
+            "pwd" => {
+                self.print_colored(&self.cwd_path.clone(), OK);
+                self.print("\n");
+            }
+
+            "ls" => {
+                let target_ino = if arg1.is_empty() {
+                    Some(self.cwd_ino)
+                } else {
+                    self.resolve(arg1)
+                };
+                match target_ino {
+                    None => { self.print_colored("ls: not found\n", ERR); }
+                    Some(ino) => {
+                        let entries = self.with_ctrl(|ctrl| crate::hepfs::list_dir(ctrl, ino));
+                        if entries.is_empty() {
+                            self.print_colored("(empty)\n", DIM);
+                        }
+                        for (child_ino, name) in entries {
+                            let (is_dir, sz) = self.with_ctrl(|ctrl| crate::hepfs::stat(ctrl, child_ino));
+                            if is_dir {
+                                self.print_colored(&alloc::format!("{}/\n", name), CURSOR);
+                            } else {
+                                self.print_colored(&name, TEXT);
+                                self.print_colored(&alloc::format!("  ({} B)\n", sz), DIM);
+                            }
+                        }
+                    }
                 }
-                self.col = 0;
-                self.row = 0;
+            }
+
+            "cd" => {
+                if arg1 == "/" {
+                    self.cwd_ino  = crate::hepfs::ROOT_INO;
+                    self.cwd_path = String::from("/");
+                } else if arg1 == ".." {
+                    // Go up — re-resolve parent from path
+                    let parent_path = {
+                        let p = self.cwd_path.trim_end_matches('/');
+                        match p.rfind('/') {
+                            Some(0) | None => String::from("/"),
+                            Some(i)        => String::from(&p[..i]),
+                        }
+                    };
+                    let new_ino = self.with_ctrl(|ctrl|
+                        crate::hepfs::lookup(ctrl, &parent_path)
+                    ).unwrap_or(crate::hepfs::ROOT_INO);
+                    self.cwd_ino  = new_ino;
+                    self.cwd_path = parent_path;
+                } else {
+                    match self.resolve(arg1) {
+                        None => { self.print_colored("cd: not found\n", ERR); }
+                        Some(ino) => {
+                            let (is_dir, _) = self.with_ctrl(|ctrl| crate::hepfs::stat(ctrl, ino));
+                            if !is_dir {
+                                self.print_colored("cd: not a directory\n", ERR);
+                            } else {
+                                self.cwd_ino = ino;
+                                self.cwd_path = if self.cwd_path == "/" {
+                                    alloc::format!("/{}", arg1)
+                                } else {
+                                    alloc::format!("{}/{}", self.cwd_path, arg1)
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
+            "cat" => {
+                if arg1.is_empty() { self.print_colored("usage: cat <file>\n", ERR); return; }
+                match self.resolve(arg1) {
+                    None => { self.print_colored("cat: not found\n", ERR); }
+                    Some(ino) => {
+                        let data = self.with_ctrl(|ctrl| crate::hepfs::read_file(ctrl, ino));
+                        let s = alloc::string::String::from_utf8_lossy(&data);
+                        self.print(&s);
+                        if !s.ends_with('\n') { self.print("\n"); }
+                    }
+                }
+            }
+
+            "mkdir" => {
+                if arg1.is_empty() { self.print_colored("usage: mkdir <name>\n", ERR); return; }
+                let cwd = self.cwd_ino;
+                self.with_ctrl(|ctrl| { crate::hepfs::create_dir(ctrl, cwd, arg1); });
+                self.print_colored("created\n", OK);
+            }
+
+            "touch" => {
+                if arg1.is_empty() { self.print_colored("usage: touch <name>\n", ERR); return; }
+                let cwd = self.cwd_ino;
+                self.with_ctrl(|ctrl| { crate::hepfs::create_file(ctrl, cwd, arg1); });
+                self.print_colored("created\n", OK);
+            }
+
+            "rm" => {
+                if arg1.is_empty() { self.print_colored("usage: rm <name>\n", ERR); return; }
+                let cwd = self.cwd_ino;
+                let ok = self.with_ctrl(|ctrl| crate::hepfs::remove(ctrl, cwd, arg1));
+                if ok { self.print_colored("removed\n", OK); }
+                else  { self.print_colored("rm: failed (not found or dir not empty)\n", ERR); }
+            }
+
+            "write" => {
+                if arg1.is_empty() || arg2.is_empty() {
+                    self.print_colored("usage: write <file> <content>\n", ERR); return;
+                }
+                let cwd = self.cwd_ino;
+                let ino = match self.resolve(arg1) {
+                    Some(i) => i,
+                    None    => self.with_ctrl(|ctrl| crate::hepfs::create_file(ctrl, cwd, arg1)),
+                };
+                let data = arg2.as_bytes();
+                self.with_ctrl(|ctrl| crate::hepfs::write_file(ctrl, ino, data));
+                self.print_colored("written\n", OK);
             }
 
             "uname" => {
                 self.print_colored("HepOS", CURSOR);
-                self.print(" v0.1 x86_64 exokernel\n");
+                self.print(" v0.1  x86_64 exokernel  HepFS\n");
             }
 
             "mem" => {
-                let free  = crate::pmm::free_pages()  * 4;
+                let free  = crate::pmm::free_pages() * 4;
                 let total = crate::pmm::total_pages() * 4;
                 self.print_colored("RAM: ", DIM);
                 self.print_u64(free);
@@ -182,36 +318,40 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
-            "ls" => {
-                // Show the HepFS root contents if available
-                self.print_colored("/\n", OK);
-                self.print("  home/\n");
-                self.print("  etc/\n");
-                self.print("  (HepFS mounted)\n");
-            }
+            "shutdown" => { self.print_colored("Shutting down...\n", ERR); crate::acpi::shutdown(); }
+            "reboot"   => { self.print_colored("Rebooting...\n",    ERR); crate::acpi::reboot(); }
 
-            "shutdown" => {
-                self.print_colored("Shutting down...\n", ERR);
-                crate::acpi::shutdown();
-            }
-
-            "reboot" => {
-                self.print_colored("Rebooting...\n", ERR);
-                crate::acpi::reboot();
-            }
-
-            s if s.starts_with("echo ") => {
-                self.print(&s[5..]);
+            s if s.starts_with("echo") => {
+                self.print(if arg1.is_empty() { "\n" } else { &cmd[5..] });
                 self.print("\n");
             }
 
             other => {
-                self.print_colored("Unknown command: ", ERR);
-                self.print(other);
-                self.print("\n");
-                self.print_colored("Type 'help'\n", DIM);
+                self.print_colored(other, ERR);
+                self.print_colored(": command not found  (try 'help')\n", DIM);
             }
         }
+    }
+
+    /// Resolve a name relative to cwd (or absolute path).
+    fn resolve(&mut self, name: &str) -> Option<u32> {
+        if name.starts_with('/') {
+            self.with_ctrl(|ctrl| crate::hepfs::lookup(ctrl, name))
+        } else {
+            let cwd = self.cwd_ino;
+            self.with_ctrl(|ctrl| {
+                crate::hepfs::list_dir(ctrl, cwd)
+                    .into_iter()
+                    .find(|(_, n)| n.as_str() == name)
+                    .map(|(ino, _)| ino)
+            })
+        }
+    }
+
+    /// Run a closure with the global NVMe controller locked.
+    fn with_ctrl<T, F: FnOnce(&mut crate::nvme::NvmeController) -> T>(&self, f: F) -> T {
+        let mut guard = crate::nvme::CONTROLLER.lock();
+        f(guard.as_mut().expect("no NVMe controller"))
     }
 
     fn print_u64(&mut self, mut n: u64) {
