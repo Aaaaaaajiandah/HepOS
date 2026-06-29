@@ -4,7 +4,8 @@
 //! blitted to the real GOP framebuffer once per frame (~60 fps from the
 //! APIC timer).  The WM uses a simple top-down Z-order list.
 
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
+use alloc::vec::Vec;
 use spin::Mutex;
 use crate::framebuffer::{Color, Display};
 
@@ -40,22 +41,16 @@ pub struct Window {
     pub w:         usize,
     pub h:         usize,
     pub minimized: bool,
-    // flat RGBA back-buffer for the content area
-    pub content:   Vec<u32>,
-    // drag state
-    drag_off_x: i32,
-    drag_off_y: i32,
+    drag_off_x:    i32,
+    drag_off_y:    i32,
     pub dragging:  bool,
 }
 
 impl Window {
     pub fn new(id: usize, title: &str, x: i32, y: i32, w: usize, h: usize) -> Self {
-        let mut content = Vec::new();
-        content.resize(w * h, 0x141414); // default background
         Window {
             id, title: String::from(title),
             x, y, w, h, minimized: false,
-            content,
             drag_off_x: 0, drag_off_y: 0, dragging: false,
         }
     }
@@ -224,19 +219,11 @@ impl Desktop {
         display.fill_rect(close_x, ty + 4, 14, 14, pal::CLOSE_BTN);
         display.draw_text(close_x + 4, ty + 5, "x", pal::TEXT, 1);
 
-        // Content area
+        // Content area — apps draw here via their own logic
         display.fill_rect(win.x as usize, win.y as usize, win.w, win.h, pal::WIN_BG);
 
-        // Blit window content buffer
-        for row in 0..win.h {
-            for col in 0..win.w {
-                let px = win.content[row * win.w + col];
-                let c = Color { r: ((px >> 16) & 0xFF) as u8, g: ((px >> 8) & 0xFF) as u8, b: (px & 0xFF) as u8 };
-                if c.r != 0x14 || c.g != 0x14 || c.b != 0x14 { // skip default bg
-                    display.put_pixel_pub(win.x as usize + col, win.y as usize + row, c);
-                }
-            }
-        }
+        // Subtle inner accent line at top of content
+        display.fill_rect(win.x as usize, win.y as usize, win.w, 1, pal::BORDER);
     }
 
     fn draw_taskbar(&self, display: &mut Display) {
