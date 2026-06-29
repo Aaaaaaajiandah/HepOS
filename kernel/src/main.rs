@@ -5,6 +5,7 @@ mod framebuffer;
 mod gdt;
 mod idt;
 mod panic;
+mod pmm;
 mod serial;
 
 use framebuffer::Display;
@@ -15,9 +16,9 @@ use spin::Mutex;
 // Global display — used by exception handler and future modules
 pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
-#[used] static BASE_REVISION:     BaseRevision     = BaseRevision::new();
+#[used] static BASE_REVISION:       BaseRevision       = BaseRevision::new();
 #[used] static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
-#[used] static HHDM_REQUEST:      HhdmRequest      = HhdmRequest::new();
+#[used] static HHDM_REQUEST:        HhdmRequest        = HhdmRequest::new();
 
 #[no_mangle]
 extern "C" fn kmain() -> ! {
@@ -29,6 +30,10 @@ extern "C" fn kmain() -> ! {
 
     idt::init();
     serial::print("IDT loaded\n");
+
+    let hhdm = HHDM_REQUEST.response().expect("no HHDM").offset;
+    pmm::init(hhdm);
+    serial::print("PMM init\n");
 
     let fb = FRAMEBUFFER_REQUEST
         .response()
@@ -55,9 +60,36 @@ extern "C" fn kmain() -> ! {
         display.draw_text(x_mid - 72, y_mid - 24, "HepOS",               accent, 3);
         display.draw_text(x_mid - 88, y_mid + 16, "kernel alive",         white,  2);
         display.draw_text(x_mid - 96, y_mid + 48, "v0.1 | x86_64 exokernel", dim, 1);
+
+        // show memory stats
+        let free_mb  = pmm::free_pages()  * 4 / 1024;
+        let total_mb = pmm::total_pages() * 4 / 1024;
+        let mut buf = [0u8; 64];
+        let mem_str = fmt_mem(free_mb, total_mb, &mut buf);
+        display.draw_text(x_mid - (mem_str.len() * 9 / 2), y_mid + 72, mem_str, dim, 1);
     }
 
     serial::print("Boot complete\n");
 
     loop { core::hint::spin_loop(); }
+}
+
+fn fmt_mem<'a>(free_mb: u64, total_mb: u64, buf: &'a mut [u8; 64]) -> &'a str {
+    let mut pos = 0usize;
+    for b in b"RAM: "       { if pos < 64 { buf[pos] = *b; pos += 1; } }
+    write_u64(free_mb,  &mut pos, buf);
+    for b in b" MB free / " { if pos < 64 { buf[pos] = *b; pos += 1; } }
+    write_u64(total_mb, &mut pos, buf);
+    for b in b" MB total"   { if pos < 64 { buf[pos] = *b; pos += 1; } }
+    core::str::from_utf8(&buf[..pos]).unwrap_or("")
+}
+
+fn write_u64(mut n: u64, pos: &mut usize, buf: &mut [u8; 64]) {
+    if n == 0 { if *pos < 64 { buf[*pos] = b'0'; *pos += 1; } return; }
+    let start = *pos;
+    while n > 0 {
+        if *pos < 64 { buf[*pos] = b'0' + (n % 10) as u8; *pos += 1; }
+        n /= 10;
+    }
+    buf[start..*pos].reverse();
 }
