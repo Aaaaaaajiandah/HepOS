@@ -110,9 +110,11 @@ pub fn init() {
     wait_read();  inb(DATA_PORT);
 }
 
-/// Poll the PS/2 data port directly (use before interrupt routing is set up).
+/// Poll the PS/2 data port. Only processes keyboard bytes (bit 5 = 0).
+/// Mouse bytes (bit 5 = 1) are left for mouse::poll() to consume.
 pub fn poll() {
-    if inb(STATUS_PORT) & 0x01 != 0 {
+    let s = inb(STATUS_PORT);
+    if s & 0x01 != 0 && s & 0x20 == 0 {
         handle_scancode(inb(DATA_PORT));
     }
 }

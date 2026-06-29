@@ -36,7 +36,13 @@ impl MouseState {
 
 pub static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
+static BYTE_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 pub fn handle_byte(b: u8) {
+    let n = BYTE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if n < 9 { // print first 9 bytes so we can see if packets arrive
+        crate::serial::print_hex("mouse byte", b as u64);
+    }
     let mut m = MOUSE.lock();
     match m.cycle {
         0 => {
