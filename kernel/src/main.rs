@@ -9,7 +9,9 @@ mod gdt;
 mod heap;
 mod idt;
 mod panic;
+mod pci;
 mod pmm;
+mod ps2;
 mod scheduler;
 mod serial;
 mod vmm;
@@ -107,6 +109,19 @@ extern "C" fn kmain() -> ! {
     // Enable interrupts — APIC timer will now fire
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
+    // PCI enumeration
+    let pci_devices = pci::enumerate();
+    serial::print("PCI devices:\n");
+    for d in &pci_devices {
+        serial::print("  ");
+        serial::print(pci::class_name(d.class, d.subclass));
+        serial::print("\n");
+    }
+
+    // PS/2 keyboard
+    ps2::init();
+    serial::print("PS/2 init\n");
+
     serial::print("Boot complete\n");
 
     loop { core::hint::spin_loop(); }
@@ -117,17 +132,32 @@ fn task_idle() -> ! {
 }
 
 fn task_blink() -> ! {
-    let colors = [
-        framebuffer::Color::from_hex(0x6C8EFF),
-        framebuffer::Color::from_hex(0x0D0D0D),
-    ];
-    let mut i = 0usize;
+    let white  = framebuffer::Color::from_hex(0xE8E8E8);
+    let bg     = framebuffer::Color::from_hex(0x0D0D0D);
+    let cursor = framebuffer::Color::from_hex(0x6C8EFF);
+    let mut col: usize = 0;
+    let row: usize = 8; // text row in chars
     loop {
-        if let Some(d) = DISPLAY.lock().as_mut() {
-            d.fill_rect(0, 0, 8, 8, colors[i % 2]);
+        // Poll PS/2 (will use interrupt later)
+        ps2::poll();
+        if let Some(c) = ps2::read_char() {
+            if let Some(d) = DISPLAY.lock().as_mut() {
+                if c == '\n' || col > 60 {
+                    col = 0;
+                } else {
+                    // erase cursor
+                    d.fill_rect(col * 9 + 24, row * 18, 8, 16, bg);
+                    // draw char
+                    let s: &[u8] = &[c as u8];
+                    let text = core::str::from_utf8(s).unwrap_or("?");
+                    d.draw_text(col * 9 + 24, row * 18, text, white, 1);
+                    col += 1;
+                    // draw cursor
+                    d.fill_rect(col * 9 + 24, row * 18 + 14, 8, 2, cursor);
+                }
+            }
         }
-        i += 1;
-        for _ in 0..5_000_000 { core::hint::spin_loop(); }
+        core::hint::spin_loop();
     }
 }
 
