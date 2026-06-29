@@ -102,11 +102,18 @@ impl NvmeController {
         q_wait(&mut self.admin, cid)
     }
 
+<<<<<<< HEAD
     fn identify(&mut self, cns: u32, nsid: u32, buf_phys: u64) {
         let s = self.admin_cmd(SqEntry {
             cdw0:  0x06,
             nsid,
             prp1:  buf_phys,
+=======
+    fn identify(&mut self, cns: u32, buf_phys: u64) {
+        let s = self.admin_cmd(SqEntry {
+            cdw0: 0x06,
+            prp1: buf_phys,
+>>>>>>> 41b662b (add paging and nvme support)
             cdw10: cns,
             ..Default::default()
         });
@@ -167,8 +174,11 @@ fn q_submit(q: &mut Queue, cid: u16, mut cmd: SqEntry) {
 }
 
 fn q_wait(q: &mut Queue, cid: u16) -> u16 {
+<<<<<<< HEAD
     use crate::serial;
     let mut spins = 0u64;
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     loop {
         let e = unsafe { q.cq.add(q.cq_head as usize).read_volatile() };
         if (e.status & 1) == q.phase as u16 && e.cid == cid {
@@ -179,6 +189,7 @@ fn q_wait(q: &mut Queue, cid: u16) -> u16 {
             return s;
         }
         core::hint::spin_loop();
+<<<<<<< HEAD
         spins += 1;
         if spins == 50_000_000 {
             serial::print_hex("NVMe: waiting for cid", cid as u64);
@@ -190,6 +201,8 @@ fn q_wait(q: &mut Queue, cid: u16) -> u16 {
             serial::print("NVMe: cmd timeout, giving up\n");
             return 0xFFF;
         }
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     }
 }
 
@@ -215,15 +228,21 @@ fn make_queue(db_base: *mut u8, qid: usize, dstrd: usize) -> Queue {
 }
 
 pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
+<<<<<<< HEAD
     use crate::serial;
     serial::print("NVMe: searching...\n");
 
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     let dev = devices.iter().find(|d| {
         d.class == pci::CLASS_STORAGE && d.subclass == pci::SUB_NVME
     })?;
 
+<<<<<<< HEAD
     serial::print("NVMe: found device\n");
 
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     // Enable memory space + bus mastering on the PCI device
     let cmd = pci::config_read16(dev.bus, dev.dev, dev.func, 0x04);
     pci::config_write32(dev.bus, dev.dev, dev.func, 0x04, (cmd | 0x06) as u32);
@@ -237,6 +256,7 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         bar0 & !0xF
     };
 
+<<<<<<< HEAD
     serial::print_hex("NVMe: BAR phys", bar_phys);
 
     // Map 64KB of NVMe MMIO
@@ -247,14 +267,24 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     // Read capabilities
     let cap = unsafe { (regs as *const u64).read_volatile() };
     serial::print_hex("NVMe: CAP", cap);
+=======
+    // Map 64KB of NVMe MMIO
+    let regs = paging::map_mmio(bar_phys, 65536);
+
+    // Read capabilities
+    let cap = unsafe { (regs as *const u64).read_volatile() };
+>>>>>>> 41b662b (add paging and nvme support)
     let dstrd  = ((cap >> 32) & 0xF) as usize;
     let to_ms  = (((cap >> 24) & 0xFF) as u64) * 500; // CSTS.RDY timeout in ms
 
     // Disable controller
+<<<<<<< HEAD
     let csts0 = unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() };
     serial::print_hex("NVMe: initial CSTS", csts0 as u64);
 
     serial::print("NVMe: disabling controller...\n");
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     let cc = unsafe { (regs.add(REG_CC) as *const u32).read_volatile() };
     unsafe { (regs.add(REG_CC) as *mut u32).write_volatile(cc & !1); }
 
@@ -265,7 +295,10 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         spins += 1;
         if spins > to_ms * 1_000 { panic!("NVMe disable timeout"); }
     }
+<<<<<<< HEAD
     serial::print("NVMe: controller disabled\n");
+=======
+>>>>>>> 41b662b (add paging and nvme support)
 
     // Build admin queues (queue 0)
     let admin = make_queue(regs, 0, dstrd);
@@ -278,16 +311,24 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         (regs.add(REG_ASQ) as *mut u64).write_volatile(admin.sq_phys);
         (regs.add(REG_ACQ) as *mut u64).write_volatile(admin.cq_phys);
 
+<<<<<<< HEAD
         // CC: IOCQES=4 (bits 23:20, 2^4=16B), IOSQES=6 (bits 19:16, 2^6=64B), EN=1
         (regs.add(REG_CC) as *mut u32).write_volatile((4 << 20) | (6 << 16) | 1);
     }
 
     serial::print("NVMe: enabling controller...\n");
+=======
+        // CC: MPS=0 (4KB), AMS=0 (round-robin), CSS=0 (NVM), SHN=0, IOSQES=6 (64B), IOCQES=4 (16B), EN=1
+        (regs.add(REG_CC) as *mut u32).write_volatile((6 << 20) | (4 << 16) | 1);
+    }
+
+>>>>>>> 41b662b (add paging and nvme support)
     // Wait for RDY = 1
     spins = 0;
     while unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() } & 1 == 0 {
         core::hint::spin_loop();
         spins += 1;
+<<<<<<< HEAD
         if spins > to_ms * 10_000_000 { panic!("NVMe enable timeout"); }
     }
     serial::print("NVMe: controller ready\n");
@@ -295,15 +336,24 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     serial::print("NVMe: creating IO queue...\n");
     let io_q = make_queue(regs, 1, dstrd);
     serial::print("NVMe: IO queue created\n");
+=======
+        if spins > to_ms * 1_000 { panic!("NVMe enable timeout"); }
+    }
+>>>>>>> 41b662b (add paging and nvme support)
 
     let mut ctrl = NvmeController {
         regs,
         admin,
+<<<<<<< HEAD
         io: io_q,
+=======
+        io: make_queue(regs, 1, dstrd),
+>>>>>>> 41b662b (add paging and nvme support)
         cid: 0,
         lba_size: 512,
         lba_count: 0,
     };
+<<<<<<< HEAD
     serial::print("NVMe: ctrl struct built\n");
 
     // Identify Controller (CNS=1, NSID=0 is valid for controller identify)
@@ -317,15 +367,37 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     ctrl.lba_size  = 512;
     ctrl.lba_count = ctrl.lba_count; // stays 0 for now, set after IO queues
     serial::print("NVMe: LBA size = 512\n");
+=======
+
+    // Identify Controller (CNS=1) — just to confirm controller works
+    let (id_phys, _) = alloc_dma_page();
+    ctrl.identify(1, id_phys);
+
+    // Identify Namespace 1 (CNS=0) — get block size and count
+    let (ns_phys, ns_virt) = alloc_dma_page();
+    ctrl.identify(0, ns_phys);
+    unsafe {
+        let ns = &*(ns_virt as *const IdNs);
+        ctrl.lba_count = ns.nsze;
+        let fmt_idx = (ns.flbas & 0xF) as usize;
+        let lbaf = ns.lbaf[fmt_idx];
+        ctrl.lba_size = 1u32 << ((lbaf >> 16) & 0xFF);
+    }
+>>>>>>> 41b662b (add paging and nvme support)
 
     // Create I/O queues (qid=1, size=QD, linked to cqid=1)
     let io_sq_phys = ctrl.io.sq_phys;
     let io_cq_phys = ctrl.io.cq_phys;
+<<<<<<< HEAD
     serial::print("NVMe: Create IO CQ...\n");
     ctrl.create_io_cq(1, io_cq_phys, QD as u16);
     serial::print("NVMe: Create IO SQ...\n");
     ctrl.create_io_sq(1, io_sq_phys, QD as u16, 1);
     serial::print("NVMe: IO queues ready\n");
+=======
+    ctrl.create_io_cq(1, io_cq_phys, QD as u16);
+    ctrl.create_io_sq(1, io_sq_phys, QD as u16, 1);
+>>>>>>> 41b662b (add paging and nvme support)
 
     Some(ctrl)
 }

@@ -10,7 +10,10 @@ mod gdt;
 mod heap;
 mod hepfs;
 mod idt;
+<<<<<<< HEAD
 mod mouse;
+=======
+>>>>>>> 41b662b (add paging and nvme support)
 mod nvme;
 mod paging;
 mod panic;
@@ -137,11 +140,14 @@ extern "C" fn kmain() -> ! {
         serial::print("\n");
     }
 
+<<<<<<< HEAD
     // Disable interrupts for entire NVMe + FS init — the timer firing mid-MMIO
     // causes a triple fault because the scheduler switches context before NVMe
     // queue setup is stable.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
 
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     // NVMe
     if let Some(mut ctrl) = nvme::init(&pci_devices) {
         serial::print("NVMe ready\n");
@@ -162,6 +168,7 @@ extern "C" fn kmain() -> ! {
         ctrl.read_blocks(0, 1, phys);
         let ok = unsafe { *(virt as *const u8) } == 0xAB;
         serial::print(if ok { "NVMe R/W OK\n" } else { "NVMe R/W FAIL\n" });
+<<<<<<< HEAD
 
         // HepFS
         if !hepfs::probe(&mut ctrl) {
@@ -187,14 +194,20 @@ extern "C" fn kmain() -> ! {
         serial::print("/ contents:\n");
         for (_, name) in &entries { serial::print("  "); serial::print(name); serial::print("\n"); }
 
+=======
+>>>>>>> 41b662b (add paging and nvme support)
     } else {
         serial::print("No NVMe device found\n");
     }
 
+<<<<<<< HEAD
     // Re-enable interrupts now that NVMe + FS are stable
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     // Input devices
+=======
+    // PS/2 keyboard
+>>>>>>> 41b662b (add paging and nvme support)
     ps2::init();
     mouse::init();
     serial::print("Input init\n");
