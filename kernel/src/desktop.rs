@@ -81,16 +81,19 @@ impl Window {
 // ── Desktop ──────────────────────────────────────────────────────────────────
 pub struct Desktop {
     pub windows:  Vec<Window>,
-    pub focused:  Option<usize>,   // window id
+    pub focused:  Option<usize>,
     next_id:      usize,
     pub fb_w:     usize,
     pub fb_h:     usize,
     prev_btn:     u8,
+    pub dirty:    bool,
+    pub prev_cx:  i32,
+    pub prev_cy:  i32,
 }
 
 impl Desktop {
     pub fn new(fb_w: usize, fb_h: usize) -> Self {
-        Desktop { windows: Vec::new(), focused: None, next_id: 0, fb_w, fb_h, prev_btn: 0 }
+        Desktop { windows: Vec::new(), focused: None, next_id: 0, fb_w, fb_h, prev_btn: 0, dirty: true, prev_cx: 0, prev_cy: 0 }
     }
 
     pub fn add_window(&mut self, title: &str, x: i32, y: i32, w: usize, h: usize) -> usize {
@@ -110,6 +113,11 @@ impl Desktop {
     }
 
     pub fn update_mouse(&mut self, mx: i32, my: i32, buttons: u8) {
+        if mx != self.prev_cx || my != self.prev_cy {
+            self.dirty = true;
+            self.prev_cx = mx;
+            self.prev_cy = my;
+        }
         let clicked    = buttons & 0x01 != 0 && self.prev_btn & 0x01 == 0;
         let released   = buttons & 0x01 == 0 && self.prev_btn & 0x01 != 0;
         let held       = buttons & 0x01 != 0;
@@ -122,9 +130,9 @@ impl Desktop {
                     if win.dragging {
                         win.x = mx - win.drag_off_x;
                         win.y = my - win.drag_off_y;
-                        // clamp inside screen
                         win.x = win.x.max(0).min(self.fb_w as i32 - win.w as i32);
                         win.y = win.y.max(TITLE_H as i32).min(self.fb_h as i32 - TASKBAR_H as i32 - 1);
+                        self.dirty = true;
                         return;
                     }
                 }
@@ -148,6 +156,7 @@ impl Desktop {
 
             if let Some(id) = hit_id {
                 self.bring_to_front(id);
+                self.dirty = true;
                 let win = self.windows.iter_mut().find(|w| w.id == id).unwrap();
                 if win.close_hit(mx, my) {
                     win.minimized = true;

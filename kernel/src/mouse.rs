@@ -62,12 +62,14 @@ pub fn handle_byte(b: u8) {
 }
 
 pub fn poll() {
-    while inb(STATUS) & 0x01 != 0 {
-        if inb(STATUS) & 0x20 != 0 {
-            handle_byte(inb(DATA));
-        } else {
-            inb(DATA); // keyboard byte, discard
+    loop {
+        let s = inb(STATUS);
+        if s & 0x01 == 0 { break; }   // no data available
+        let b = inb(DATA);
+        if s & 0x20 != 0 {             // bit 5: data is from aux (mouse)
+            handle_byte(b);
         }
+        // else: keyboard byte — ps2::poll() handles those
     }
 }
 

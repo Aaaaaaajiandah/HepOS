@@ -231,18 +231,23 @@ fn task_blink() -> ! {
             }
         }
 
-        // Render desktop to framebuffer
-        {
-            let dt_guard = desktop::DESKTOP.lock();
-            if let Some(dt) = dt_guard.as_ref() {
+        // Render desktop only when something changed
+        let should_render = desktop::DESKTOP.lock()
+            .as_ref().map(|dt| dt.dirty).unwrap_or(false);
+
+        if should_render {
+            let mut dt_guard = desktop::DESKTOP.lock();
+            if let Some(dt) = dt_guard.as_mut() {
+                dt.dirty = false;
+                let (cx, cy) = (dt.prev_cx, dt.prev_cy);
                 if let Some(display) = DISPLAY.lock().as_mut() {
-                    dt.render(display, mx, my);
+                    dt.render(display, cx, cy);
                 }
             }
         }
 
-        // ~60fps: small spin delay
-        for _ in 0..50_000 { core::hint::spin_loop(); }
+        // ~60fps cap
+        for _ in 0..1_200_000 { core::hint::spin_loop(); }
     }
 }
 
