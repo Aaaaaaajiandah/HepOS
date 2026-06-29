@@ -232,21 +232,12 @@ fn task_blink() -> ! {
             btn = m.buttons;
         }
 
-        // Keyboard: WASD moves cursor; everything else → terminal
+        // All keyboard input goes to terminal
         let mut ps2_had_input = false;
         while let Some(c) = ps2::read_char() {
             ps2_had_input = true;
-            match c {
-                'w' => my -= 6,
-                's' => my += 6,
-                'a' => mx -= 6,
-                'd' => mx += 6,
-                ' ' => btn ^= 1,
-                other => {
-                    let mut tg = terminal::TERMINAL.lock();
-                    if let Some(t) = tg.as_mut() { t.on_key(other); }
-                }
-            }
+            let mut tg = terminal::TERMINAL.lock();
+            if let Some(t) = tg.as_mut() { t.on_key(c); }
         }
 
         // Clamp and write back mouse state
