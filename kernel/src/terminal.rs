@@ -427,13 +427,14 @@ impl Terminal {
                         alloc::format!("{}/{}", self.cwd_path, arg1)
                     };
                     crate::editor::open(&full);
-                    // Un-minimize editor window and focus it
+                    // Un-minimize editor window (id=3) and focus it
                     {
                         let mut dt = crate::desktop::DESKTOP.lock();
                         if let Some(dt) = dt.as_mut() {
-                            if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+                            if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
                                 w.minimized = false;
-                                w.title = alloc::format!("Editor — {}", arg1);
+                                // Show filename in title
+                                w.title = alloc::format!("Editor: {}", arg1);
                             }
                             dt.dirty = true;
                         }

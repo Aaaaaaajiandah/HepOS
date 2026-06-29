@@ -47,7 +47,7 @@ impl Editor {
             cursor_row: 0, cursor_col: 0,
             scroll_row: 0,
             modified: false,
-            status_msg: String::from("Ctrl+S save  Ctrl+Q quit  arrows navigate"),
+            status_msg: String::from("F2=save  F10=close  Ctrl+S/Q also work"),
             status_ok: true,
             open: true,
         }
@@ -56,19 +56,21 @@ impl Editor {
     pub fn on_key(&mut self, c: char) {
         use crate::ps2;
         match c as u8 {
-            // Ctrl+S → save
+            // Ctrl+S or F2 → save
             0x13 => { self.save(); }
+            b if b == ps2::KEY_F2 => { self.save(); }
 
-            // Ctrl+Q or ESC → close
+            // Ctrl+Q or ESC or F10 → close
             0x11 | 0x1B => {
                 if self.modified {
-                    self.status_msg = String::from("Unsaved! Ctrl+Q again to force close");
+                    self.status_msg = String::from("Unsaved! Press again to force close");
                     self.status_ok = false;
-                    self.modified = false; // second press will close
+                    self.modified = false;
                 } else {
                     self.open = false;
                 }
             }
+            b if b == ps2::KEY_F10 => { self.open = false; }
 
             // Arrow keys
             b if b == ps2::KEY_UP => {

@@ -127,7 +127,7 @@ extern "C" fn kmain() -> ! {
     {
         let mut dt = desktop::DESKTOP.lock();
         if let Some(dt) = dt.as_mut() {
-            if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+            if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
                 w.minimized = true;
             }
         }
@@ -298,21 +298,20 @@ fn task_blink() -> ! {
             let focused = *FOCUSED_WIN.lock();
 
             match c {
-                '\x1b' => {
-                    // ESC → unfocus, enter cursor mode
+                '\x1b' if focused != Some(3) => {
+                    // ESC → unfocus (unless editor has focus; editor handles its own ESC)
                     *FOCUSED_WIN.lock() = None;
                 }
                 _ if focused == Some(3) => {
-                    // Editor has focus
+                    // Editor has focus — route all keys including ESC
                     let mut eg = editor::EDITOR.lock();
                     if let Some(ed) = eg.as_mut() {
                         ed.on_key(c);
                         if !ed.open {
-                            // Editor closed — minimize window, refocus terminal
                             drop(eg);
                             let mut dt = desktop::DESKTOP.lock();
                             if let Some(dt) = dt.as_mut() {
-                                if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+                                if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
                                     w.minimized = true;
                                 }
                                 dt.dirty = true;
@@ -322,7 +321,7 @@ fn task_blink() -> ! {
                     }
                 }
                 _ if focused.is_some() => {
-                    // Terminal has focus
+                    // Terminal (or other window) has focus
                     let mut tg = terminal::TERMINAL.lock();
                     if let Some(t) = tg.as_mut() { t.on_key(c); }
                 }
@@ -421,7 +420,7 @@ fn task_blink() -> ! {
                         let dt = desktop::DESKTOP.lock();
                         dt.as_ref().and_then(|d| {
                             d.windows.iter()
-                                .find(|w| !w.minimized && w.title.as_str() == "Editor")
+                                .find(|w| !w.minimized && w.id == 3)
                                 .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
                         })
                     };

@@ -72,6 +72,10 @@ pub const KEY_RIGHT: u8 = 0x83;
 pub const KEY_DEL:   u8 = 0x84;
 pub const KEY_HOME:  u8 = 0x85;
 pub const KEY_END:   u8 = 0x86;
+pub const KEY_F1:    u8 = 0x91;
+pub const KEY_F2:    u8 = 0x92; // save in editor
+pub const KEY_F5:    u8 = 0x95;
+pub const KEY_F10:   u8 = 0x9A; // close in editor
 
 // Shifted symbols for US QWERTY
 static SHIFT_MAP: [u8; 58] = [
@@ -113,7 +117,7 @@ pub fn handle_scancode(sc: u8) {
     if release { return; } // ignore all other key releases
 
     let ch: u8 = if ext {
-        match sc {
+        match base_sc {
             0x48 => KEY_UP,
             0x50 => KEY_DOWN,
             0x4B => KEY_LEFT,
@@ -129,6 +133,15 @@ pub fn handle_scancode(sc: u8) {
         let caps  = CAPS .load(Relaxed);
         let ctrl  = CTRL .load(Relaxed);
 
+        // F-keys (non-extended, scancodes 0x3B-0x44)
+        if (0x3B..=0x44).contains(&base_sc) {
+            let fkey = base_sc - 0x3A; // F1=1, F2=2, ..., F10=10
+            let ch = 0x90 + fkey;
+            if ch != 0 { KEYBUF.lock().push(ch); }
+            return;
+        }
+
+        let sc = base_sc as usize;
         let raw = if shift && sc < SHIFT_MAP.len() { SHIFT_MAP[sc] }
                   else if sc < SCANCODE_MAP.len()  { SCANCODE_MAP[sc] }
                   else { 0 };
