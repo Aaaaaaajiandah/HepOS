@@ -12,6 +12,24 @@ pub fn init() {
     }
 }
 
+pub fn print_hex(label: &str, val: u64) {
+    print(label);
+    print(": 0x");
+    let digits = b"0123456789ABCDEF";
+    let mut buf = [0u8; 16];
+    let mut n = val;
+    let mut i = 16usize;
+    loop {
+        i -= 1;
+        buf[i] = digits[(n & 0xF) as usize];
+        n >>= 4;
+        if n == 0 { break; }
+    }
+    let s = core::str::from_utf8(&buf[i..]).unwrap_or("?");
+    print(s);
+    print("\n");
+}
+
 pub fn print(s: &str) {
     for b in s.bytes() {
         unsafe {

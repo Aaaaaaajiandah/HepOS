@@ -201,9 +201,14 @@ fn make_queue(db_base: *mut u8, qid: usize, dstrd: usize) -> Queue {
 }
 
 pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
+    use crate::serial;
+    serial::print("NVMe: searching...\n");
+
     let dev = devices.iter().find(|d| {
         d.class == pci::CLASS_STORAGE && d.subclass == pci::SUB_NVME
     })?;
+
+    serial::print("NVMe: found device\n");
 
     // Enable memory space + bus mastering on the PCI device
     let cmd = pci::config_read16(dev.bus, dev.dev, dev.func, 0x04);
@@ -218,15 +223,21 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         bar0 & !0xF
     };
 
+    serial::print_hex("NVMe: BAR phys", bar_phys);
+
     // Map 64KB of NVMe MMIO
+    serial::print("NVMe: mapping MMIO...\n");
     let regs = paging::map_mmio(bar_phys, 65536);
+    serial::print("NVMe: MMIO mapped\n");
 
     // Read capabilities
     let cap = unsafe { (regs as *const u64).read_volatile() };
+    serial::print_hex("NVMe: CAP", cap);
     let dstrd  = ((cap >> 32) & 0xF) as usize;
     let to_ms  = (((cap >> 24) & 0xFF) as u64) * 500; // CSTS.RDY timeout in ms
 
     // Disable controller
+    serial::print("NVMe: disabling controller...\n");
     let cc = unsafe { (regs.add(REG_CC) as *const u32).read_volatile() };
     unsafe { (regs.add(REG_CC) as *mut u32).write_volatile(cc & !1); }
 
@@ -237,6 +248,7 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         spins += 1;
         if spins > to_ms * 1_000 { panic!("NVMe disable timeout"); }
     }
+    serial::print("NVMe: controller disabled\n");
 
     // Build admin queues (queue 0)
     let admin = make_queue(regs, 0, dstrd);
@@ -253,6 +265,7 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         (regs.add(REG_CC) as *mut u32).write_volatile((6 << 20) | (4 << 16) | 1);
     }
 
+    serial::print("NVMe: enabling controller...\n");
     // Wait for RDY = 1
     spins = 0;
     while unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() } & 1 == 0 {
@@ -260,6 +273,7 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         spins += 1;
         if spins > to_ms * 1_000 { panic!("NVMe enable timeout"); }
     }
+    serial::print("NVMe: controller ready\n");
 
     let mut ctrl = NvmeController {
         regs,
