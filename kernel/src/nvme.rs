@@ -102,10 +102,11 @@ impl NvmeController {
         q_wait(&mut self.admin, cid)
     }
 
-    fn identify(&mut self, cns: u32, buf_phys: u64) {
+    fn identify(&mut self, cns: u32, nsid: u32, buf_phys: u64) {
         let s = self.admin_cmd(SqEntry {
-            cdw0: 0x06,
-            prp1: buf_phys,
+            cdw0:  0x06,
+            nsid,
+            prp1:  buf_phys,
             cdw10: cns,
             ..Default::default()
         });
@@ -305,16 +306,16 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     };
     serial::print("NVMe: ctrl struct built\n");
 
-    // Identify Controller (CNS=1)
+    // Identify Controller (CNS=1, NSID=0 is valid for controller identify)
     serial::print("NVMe: sending Identify...\n");
     let (id_phys, _) = alloc_dma_page();
-    ctrl.identify(1, id_phys);
+    ctrl.identify(1, 0, id_phys);
     serial::print("NVMe: Identify OK\n");
 
-    // Identify Namespace 1 (CNS=0) — get block size and count
+    // Identify Namespace 1 (CNS=0, NSID=1 required)
     serial::print("NVMe: Identify Namespace...\n");
     let (ns_phys, ns_virt) = alloc_dma_page();
-    ctrl.identify(0, ns_phys);
+    ctrl.identify(0, 1, ns_phys);
     serial::print("NVMe: Namespace OK\n");
     unsafe {
         let ns = &*(ns_virt as *const IdNs);
