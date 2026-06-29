@@ -95,6 +95,20 @@ extern "C" fn kmain() -> ! {
         display.draw_text(x_mid - (mem_str.len() * 9 / 2), y_mid + 72, mem_str, dim, 1);
     }
 
+    // Init desktop BEFORE enabling interrupts so task_blink sees it immediately
+    {
+        let fb = FRAMEBUFFER_REQUEST.response()
+            .and_then(|r| r.framebuffers().first().copied())
+            .expect("no framebuffer for desktop");
+        let w = fb.width as usize;
+        let h = fb.height as usize;
+        let mut dt = desktop::Desktop::new(w, h);
+        dt.add_window("Welcome to HepOS", 80,  80,  360, 200);
+        dt.add_window("HepFS",            500, 100, 240, 180);
+        dt.add_window("Terminal",         200, 320, 400, 220);
+        *desktop::DESKTOP.lock() = Some(dt);
+    }
+
     // Wire timer interrupt into IDT
     idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
 
@@ -184,21 +198,6 @@ extern "C" fn kmain() -> ! {
     ps2::init();
     mouse::init();
     serial::print("Input init\n");
-
-    // Boot the desktop
-    {
-        let fb = FRAMEBUFFER_REQUEST.response()
-            .and_then(|r| r.framebuffers().first().copied())
-            .expect("no framebuffer");
-        let w = fb.width as usize;
-        let h = fb.height as usize;
-
-        let mut dt = desktop::Desktop::new(w, h);
-        dt.add_window("Welcome to HepOS", 80,  80,  360, 200);
-        dt.add_window("HepFS",            500, 100, 240, 180);
-        dt.add_window("Terminal",         200, 320, 400, 220);
-        *desktop::DESKTOP.lock() = Some(dt);
-    }
 
     serial::print("Boot complete\n");
 

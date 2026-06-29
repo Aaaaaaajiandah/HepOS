@@ -71,22 +71,47 @@ pub fn poll() {
     }
 }
 
-pub fn init() {
-    // Enable auxiliary (mouse) port
-    wait_w(); outb(CMD, 0xA8);
+fn drain() {
+    // Flush any pending bytes without blocking
+    for _ in 0..256 {
+        if inb(STATUS) & 0x01 == 0 { break; }
+        inb(DATA);
+    }
+}
 
-    // Enable mouse interrupt in controller config
+fn timed_read() -> Option<u8> {
+    for _ in 0..100_000u32 {
+        if inb(STATUS) & 0x01 != 0 { return Some(inb(DATA)); }
+    }
+    None
+}
+
+fn aux_write_safe(b: u8) {
+    wait_w(); outb(CMD, 0xD4);
+    wait_w(); outb(DATA, b);
+}
+
+pub fn init() {
+    drain();
+
+    // Enable auxiliary port
+    wait_w(); outb(CMD, 0xA8);
+    drain();
+
+    // Update controller config to enable mouse clock
     wait_w(); outb(CMD, 0x20);
-    wait_r();
-    let cfg = inb(DATA) | 0x02; // enable IRQ12
+    let cfg = timed_read().unwrap_or(0) | 0x02;
     wait_w(); outb(CMD, 0x60);
     wait_w(); outb(DATA, cfg);
+    drain();
 
-    // Tell mouse to use default settings
-    aux_write(0xF6);
-    wait_r(); inb(DATA); // ACK
+    // Set defaults — read ACK with timeout, don't hang if mouse absent
+    aux_write_safe(0xF6);
+    timed_read(); // ACK or None
+    drain();
 
-    // Enable mouse data reporting
-    aux_write(0xF4);
-    wait_r(); inb(DATA); // ACK
+    // Enable data reporting
+    aux_write_safe(0xF4);
+    timed_read(); // ACK or None
+    drain();
 }
