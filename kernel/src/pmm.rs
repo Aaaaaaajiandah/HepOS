@@ -52,7 +52,9 @@ pub fn init(hhdm_offset: u64) {
         for page in first..last {
             if page >= MAX_PAGES { break; }
             total += 1;
-            if entry.type_ == MEMMAP_USABLE {
+            // Only use pages above 1 MB — avoids the reserved hole at
+            // 0xA0000–0xFFFFF (VGA/BIOS) which breaks contiguous heap assumptions.
+            if entry.type_ == MEMMAP_USABLE && base >= 0x10_0000 {
                 set_free(page);
                 free += 1;
             }

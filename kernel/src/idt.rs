@@ -200,6 +200,32 @@ exception_stub!(ex29, 29, has_err);
 exception_stub!(ex30, 30, has_err);
 exception_stub!(ex31, 31, no_err);
 
+/// Naked timer interrupt stub — saves ALL caller-saved regs, runs scheduler, EOI.
+#[unsafe(naked)]
+pub unsafe extern "C" fn timer_stub() {
+    core::arch::naked_asm!(
+        "push rax", "push rcx", "push rdx",
+        "push rsi", "push rdi",
+        "push r8",  "push r9",  "push r10", "push r11",
+        "call {tick}",          // may switch stacks internally; lock dropped before switch
+        "call {eoi}",
+        "pop r11", "pop r10", "pop r9", "pop r8",
+        "pop rdi",  "pop rsi",
+        "pop rdx",  "pop rcx",  "pop rax",
+        "iretq",
+        tick = sym crate::scheduler::tick,
+        eoi  = sym crate::apic::eoi,
+    );
+}
+
+/// Register an interrupt handler after init (for APIC timer etc.)
+pub fn set_handler(vector: u8, handler: u64) {
+    unsafe {
+        #[allow(static_mut_refs)]
+        IDT[vector as usize] = IdtEntry::new(handler);
+    }
+}
+
 pub fn init() {
     let handlers: [u64; 32] = [
         ex0  as *const () as u64, ex1  as *const () as u64,
@@ -227,8 +253,7 @@ pub fn init() {
 
         let idtr = Idtr {
             size:   (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
-            #[allow(static_mut_refs)]
-            offset: IDT.as_ptr() as u64,
+                #[allow(static_mut_refs)] offset: IDT.as_ptr() as u64,
         };
 
         asm!("lidt [{0}]", in(reg) &idtr, options(nostack, readonly));

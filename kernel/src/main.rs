@@ -1,13 +1,16 @@
 #![no_std]
 #![no_main]
+#![feature(stmt_expr_attributes)]
 extern crate alloc;
 
+mod apic;
 mod framebuffer;
 mod gdt;
 mod heap;
 mod idt;
 mod panic;
 mod pmm;
+mod scheduler;
 mod serial;
 mod vmm;
 
@@ -85,9 +88,47 @@ extern "C" fn kmain() -> ! {
         display.draw_text(x_mid - (mem_str.len() * 9 / 2), y_mid + 72, mem_str, dim, 1);
     }
 
+    // Wire timer interrupt into IDT
+    idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
+
+    apic::init();
+    serial::print("APIC init\n");
+
+    // Add two tasks so the scheduler has something to switch between
+    {
+        let mut sched = scheduler::SCHEDULER.lock();
+        sched.add(scheduler::Task::new(0, "idle",  task_idle));
+        sched.add(scheduler::Task::new(1, "blink", task_blink));
+        sched.tasks[0].state = scheduler::TaskState::Running;
+    }
+
+    serial::print("Scheduler ready\n");
+
+    // Enable interrupts — APIC timer will now fire
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+
     serial::print("Boot complete\n");
 
     loop { core::hint::spin_loop(); }
+}
+
+fn task_idle() -> ! {
+    loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
+}
+
+fn task_blink() -> ! {
+    let colors = [
+        framebuffer::Color::from_hex(0x6C8EFF),
+        framebuffer::Color::from_hex(0x0D0D0D),
+    ];
+    let mut i = 0usize;
+    loop {
+        if let Some(d) = DISPLAY.lock().as_mut() {
+            d.fill_rect(0, 0, 8, 8, colors[i % 2]);
+        }
+        i += 1;
+        for _ in 0..5_000_000 { core::hint::spin_loop(); }
+    }
 }
 
 fn fmt_mem<'a>(free_mb: u64, total_mb: u64, buf: &'a mut [u8; 64]) -> &'a str {

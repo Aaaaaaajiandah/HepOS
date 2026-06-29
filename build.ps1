@@ -53,6 +53,7 @@ Write-Host "ISO built: $iso"
 $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
 & $qemu `
     -M q35 `
+    -cpu qemu64,+x2apic `
     -m 256M `
     -cdrom $iso `
     -boot d `
