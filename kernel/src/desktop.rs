@@ -252,8 +252,11 @@ impl Desktop {
             display.draw_text(bx + 6, ty + 10, label, pal::TEXT, 1);
         }
 
-        // Clock placeholder
-        display.draw_text(self.fb_w - 80, ty + 10, "HepOS", pal::TEXT_DIM, 1);
+        // Live clock (CMOS RTC)
+        let mut tbuf = [0u8; 6];
+        let time = crate::rtc::fmt_time(&mut tbuf);
+        let tw = time.len() * 9;
+        display.draw_text(self.fb_w - tw - 8, ty + 10, time, pal::TEXT, 1);
     }
 }
 

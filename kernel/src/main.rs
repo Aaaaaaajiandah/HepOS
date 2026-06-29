@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod acpi;
 mod apic;
+mod rtc;
 mod desktop;
 mod framebuffer;
 mod gdt;
@@ -202,6 +203,44 @@ extern "C" fn kmain() -> ! {
 
         // Store controller globally so apps can use it
         *nvme::CONTROLLER.lock() = Some(ctrl);
+
+        // Write kernel manifest to HepFS
+        {
+            let mut c = nvme::CONTROLLER.lock();
+            if let Some(ctrl) = c.as_mut() {
+                // Create /kernel.txt if it doesn't exist
+                if hepfs::lookup(ctrl, "/kernel.txt").is_none() {
+                    let ino = hepfs::create_file(ctrl, hepfs::ROOT_INO, "kernel.txt");
+                    let mut db = [0u8; 11];
+                    let date = rtc::fmt_date(&mut db);
+                    let content = alloc::format!(
+                        "HepOS Kernel Manifest\n\
+                         =====================\n\
+                         Version:  v0.1\n\
+                         Arch:     x86_64\n\
+                         Type:     Exokernel (Rust no_std)\n\
+                         Bootloader: Limine v9\n\
+                         Date:     {}\n\
+                         Repo:     github.com/The-Hep-Group/HepOS\n\
+                         License:  MIT\n\
+                         \n\
+                         Subsystems:\n\
+                           PMM (bitmap, >1MB pages)\n\
+                           Heap (bump allocator)\n\
+                           Paging (HHDM + map_mmio)\n\
+                           x2APIC timer (10ms tick)\n\
+                           Preemptive scheduler\n\
+                           HepFS (flat inode, 4KB blocks)\n\
+                           NVMe driver\n\
+                           PS/2 keyboard+mouse\n\
+                           GOP framebuffer compositor\n\
+                           ACPI shutdown\n",
+                        date
+                    );
+                    hepfs::write_file(ctrl, ino, content.as_bytes());
+                }
+            }
+        }
 
     } else {
         serial::print("No NVMe device found\n");

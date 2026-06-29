@@ -51,14 +51,46 @@ static SCANCODE_MAP: [u8; 58] = [
     0,   b' ', // 0x38-0x39
 ];
 
+// Extended scancode state (0xE0 prefix)
+static EXTENDED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+// Special key codes (stored as u8 > 127, read as char via `b as char`)
+pub const KEY_UP:    u8 = 0x80;
+pub const KEY_DOWN:  u8 = 0x81;
+pub const KEY_LEFT:  u8 = 0x82;
+pub const KEY_RIGHT: u8 = 0x83;
+pub const KEY_DEL:   u8 = 0x84;
+pub const KEY_HOME:  u8 = 0x85;
+pub const KEY_END:   u8 = 0x86;
+
 /// Called from keyboard interrupt handler (or polled).
 pub fn handle_scancode(sc: u8) {
-    if sc & 0x80 != 0 { return; } // key release — ignore
-    let sc = sc as usize;
-    if sc < SCANCODE_MAP.len() {
-        let c = SCANCODE_MAP[sc];
-        if c != 0 { KEYBUF.lock().push(c); }
+    if sc == 0xE0 {
+        EXTENDED.store(true, core::sync::atomic::Ordering::Relaxed);
+        return;
     }
+    let ext = EXTENDED.swap(false, core::sync::atomic::Ordering::Relaxed);
+
+    if sc & 0x80 != 0 { return; } // key release
+
+    let ch: u8 = if ext {
+        match sc {
+            0x48 => KEY_UP,
+            0x50 => KEY_DOWN,
+            0x4B => KEY_LEFT,
+            0x4D => KEY_RIGHT,
+            0x53 => KEY_DEL,
+            0x47 => KEY_HOME,
+            0x4F => KEY_END,
+            _ => 0,
+        }
+    } else {
+        let sc = sc as usize;
+        if sc < SCANCODE_MAP.len() { SCANCODE_MAP[sc] } else { 0 }
+    };
+
+    if ch != 0 { KEYBUF.lock().push(ch); }
 }
 
 /// Non-blocking read — returns Some(char) if a key is available.

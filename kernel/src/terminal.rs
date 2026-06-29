@@ -3,7 +3,7 @@
 
 use alloc::{vec::Vec, string::String};
 use spin::Mutex;
-use crate::framebuffer::{Color, Display};
+use crate::{framebuffer::{Color, Display}, ps2};
 
 // Terminal dimensions (in character cells) — scale 2 (18×18 px per cell)
 const SCALE:      usize = 2;
@@ -32,15 +32,18 @@ impl Cell {
 }
 
 pub struct Terminal {
-    lines:      Vec<[Cell; COLS]>,
-    col:        usize,
-    row:        usize,
-    pub dirty:  bool,
-    cmd_buf:    String,
-    prompt_row: usize,
+    lines:       Vec<[Cell; COLS]>,
+    col:         usize,
+    row:         usize,
+    pub dirty:   bool,
+    cmd_buf:     String,
+    prompt_row:  usize,
     // Shell state
-    cwd_ino:    u32,
-    cwd_path:   String,
+    cwd_ino:     u32,
+    cwd_path:    String,
+    // History
+    history:     Vec<String>,
+    history_idx: Option<usize>,
 }
 
 impl Terminal {
@@ -56,6 +59,8 @@ impl Terminal {
             cmd_buf: String::new(), prompt_row: 0,
             cwd_ino: crate::hepfs::ROOT_INO,
             cwd_path: String::from("/"),
+            history: Vec::new(),
+            history_idx: None,
         };
         t.print_colored("HepOS Terminal v0.1\n", OK);
         t.print_colored("Type 'help' for commands\n\n", DIM);
@@ -114,33 +119,83 @@ impl Terminal {
 
     /// Handle a keypress from PS/2.
     pub fn on_key(&mut self, c: char) {
-        match c {
-            '\n' => {
+        match c as u8 {
+            b'\n' => {
                 self.put_char(b'\n', TEXT);
                 let cmd = alloc::string::String::from(self.cmd_buf.trim());
                 self.cmd_buf.clear();
+                self.history_idx = None;
+                if !cmd.is_empty() {
+                    self.history.push(cmd.clone());
+                    if self.history.len() > 50 { self.history.remove(0); }
+                }
                 self.execute(&cmd);
                 self.show_prompt();
             }
-            '\x08' => { // backspace
+            b'\x08' => { // backspace
                 if !self.cmd_buf.is_empty() {
                     self.cmd_buf.pop();
-                    // Erase character on screen
-                    if self.col > 0 {
-                        self.col -= 1;
-                    }
+                    if self.col > 0 { self.col -= 1; }
                     self.lines[self.row][self.col] = Cell::blank();
                 }
             }
-            c if (c as u32) >= 32 => {
-                if self.cmd_buf.len() < COLS - 10 {
-                    self.cmd_buf.push(c);
-                    self.put_char(c as u8, TEXT);
+            b'\x0C' | b'\x0B' => { // Ctrl+L or Ctrl+K = clear
+                for line in &mut self.lines { *line = [Cell::blank(); COLS]; }
+                self.col = 0; self.row = 0;
+                self.show_prompt();
+            }
+            ps2::KEY_UP => { // history previous
+                if self.history.is_empty() { return; }
+                let new_idx = match self.history_idx {
+                    None    => self.history.len() - 1,
+                    Some(0) => 0,
+                    Some(i) => i - 1,
+                };
+                self.history_idx = Some(new_idx);
+                let entry = self.history[new_idx].clone();
+                self.replace_input(&entry);
+            }
+            ps2::KEY_DOWN => { // history next
+                let action = match self.history_idx {
+                    None => None,
+                    Some(i) if i + 1 >= self.history.len() => Some(None),
+                    Some(i) => Some(Some(i + 1)),
+                };
+                match action {
+                    None => {}
+                    Some(None) => { self.history_idx = None; self.replace_input(""); }
+                    Some(Some(i)) => {
+                        self.history_idx = Some(i);
+                        let entry = self.history[i].clone();
+                        self.replace_input(&entry);
+                    }
+                }
+            }
+            ch if ch >= 32 => {
+                if self.cmd_buf.len() < COLS - 2 {
+                    self.cmd_buf.push(ch as char);
+                    self.put_char(ch, TEXT);
                 }
             }
             _ => {}
         }
         self.dirty = true;
+    }
+
+    fn replace_input(&mut self, new: &str) {
+        // Erase current input on this row back to prompt end
+        while self.col > 0 && self.cmd_buf.len() > 0 {
+            self.cmd_buf.pop();
+            self.col -= 1;
+            self.lines[self.row][self.col] = Cell::blank();
+        }
+        // Also handle if cmd_buf had more chars than shown
+        self.cmd_buf.clear();
+        // Redraw from prompt start
+        for ch in new.bytes() {
+            self.cmd_buf.push(ch as char);
+            self.put_char(ch, TEXT);
+        }
     }
 
     fn execute(&mut self, cmd: &str) {
@@ -301,6 +356,48 @@ impl Terminal {
                 let data = arg2.as_bytes();
                 self.with_ctrl(|ctrl| crate::hepfs::write_file(ctrl, ino, data));
                 self.print_colored("written\n", OK);
+            }
+
+            "history" => {
+                let hist: alloc::vec::Vec<String> = self.history.clone();
+                for (i, h) in hist.iter().enumerate() {
+                    self.print_colored(&alloc::format!("{:3}  ", i + 1), DIM);
+                    self.print(h);
+                    self.print("\n");
+                }
+            }
+
+            "date" => {
+                let mut tb = [0u8; 6];
+                let mut db = [0u8; 11];
+                let time = crate::rtc::fmt_time(&mut tb);
+                let date = crate::rtc::fmt_date(&mut db);
+                self.print_colored(date, TEXT);
+                self.print("  ");
+                self.print_colored(time, CURSOR);
+                self.print("\n");
+            }
+
+            "sysinfo" => {
+                self.print_colored("=== HepOS Kernel Info ===\n", OK);
+                self.print_colored("Kernel:    ", DIM); self.print("HepOS v0.1\n");
+                self.print_colored("Arch:      ", DIM); self.print("x86_64\n");
+                self.print_colored("Type:      ", DIM); self.print("Exokernel (Rust)\n");
+                self.print_colored("Boot:      ", DIM); self.print("Limine v9 (BIOS)\n");
+                self.print_colored("Language:  ", DIM); self.print("Rust (no_std + alloc)\n");
+                self.print_colored("Heap:      ", DIM); self.print("Bump allocator 1MB\n");
+                self.print_colored("Sched:     ", DIM); self.print("Preemptive round-robin\n");
+                self.print_colored("APIC:      ", DIM); self.print("x2APIC (MSR-mode)\n");
+                self.print_colored("FS:        ", DIM); self.print("HepFS (flat inode, 4KB blocks)\n");
+                self.print_colored("Display:   ", DIM); self.print("GOP framebuffer, software render\n");
+                self.print_colored("Storage:   ", DIM); self.print("NVMe (custom driver)\n");
+                let free_mb  = crate::pmm::free_pages() * 4 / 1024;
+                let total_mb = crate::pmm::total_pages() * 4 / 1024;
+                self.print_colored("RAM:       ", DIM);
+                self.print_u64(free_mb); self.print(" MB free / ");
+                self.print_u64(total_mb); self.print(" MB total\n");
+                self.print_colored("=========================\n", DIM);
+                self.print_colored("Source: github.com/The-Hep-Group/HepOS\n", DIM);
             }
 
             "uname" => {
