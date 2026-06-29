@@ -121,6 +121,11 @@ extern "C" fn kmain() -> ! {
         serial::print("\n");
     }
 
+    // Disable interrupts for entire NVMe + FS init — the timer firing mid-MMIO
+    // causes a triple fault because the scheduler switches context before NVMe
+    // queue setup is stable.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+
     // NVMe
     if let Some(mut ctrl) = nvme::init(&pci_devices) {
         serial::print("NVMe ready\n");
@@ -169,6 +174,9 @@ extern "C" fn kmain() -> ! {
     } else {
         serial::print("No NVMe device found\n");
     }
+
+    // Re-enable interrupts now that NVMe + FS are stable
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     // PS/2 keyboard
     ps2::init();

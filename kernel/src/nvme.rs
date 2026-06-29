@@ -250,10 +250,6 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     let to_ms  = (((cap >> 24) & 0xFF) as u64) * 500; // CSTS.RDY timeout in ms
 
     // Disable controller
-    // Disable interrupts for the duration of NVMe init to prevent timer
-    // interference with MMIO and queue setup.
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-
     let csts0 = unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() };
     serial::print_hex("NVMe: initial CSTS", csts0 as u64);
 
@@ -294,10 +290,6 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         if spins > to_ms * 10_000_000 { panic!("NVMe enable timeout"); }
     }
     serial::print("NVMe: controller ready\n");
-
-    // Re-enable interrupts now that MMIO init is done
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    serial::print("NVMe: interrupts re-enabled\n");
 
     serial::print("NVMe: creating IO queue...\n");
     let io_q = make_queue(regs, 1, dstrd);
