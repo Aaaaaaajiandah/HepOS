@@ -8,6 +8,8 @@ mod framebuffer;
 mod gdt;
 mod heap;
 mod idt;
+mod nvme;
+mod paging;
 mod panic;
 mod pci;
 mod pmm;
@@ -116,6 +118,30 @@ extern "C" fn kmain() -> ! {
         serial::print("  ");
         serial::print(pci::class_name(d.class, d.subclass));
         serial::print("\n");
+    }
+
+    // NVMe
+    if let Some(mut ctrl) = nvme::init(&pci_devices) {
+        serial::print("NVMe ready\n");
+        let s = alloc::format!(
+            "NVMe: {} MB  ({} byte blocks)\n",
+            ctrl.lba_count * ctrl.lba_size as u64 / 1024 / 1024,
+            ctrl.lba_size
+        );
+        serial::print(&s);
+        // smoke test: write then read block 0
+        let (phys, virt) = {
+            let p = pmm::alloc_page().unwrap();
+            (p, vmm::phys_to_virt(p))
+        };
+        unsafe { core::ptr::write_bytes(virt, 0xAB, 512); }
+        ctrl.write_blocks(0, 1, phys);
+        unsafe { core::ptr::write_bytes(virt, 0x00, 512); }
+        ctrl.read_blocks(0, 1, phys);
+        let ok = unsafe { *(virt as *const u8) } == 0xAB;
+        serial::print(if ok { "NVMe R/W OK\n" } else { "NVMe R/W FAIL\n" });
+    } else {
+        serial::print("No NVMe device found\n");
     }
 
     // PS/2 keyboard

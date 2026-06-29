@@ -49,7 +49,15 @@ xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin `
 
 Write-Host "ISO built: $iso"
 
-# ── 4. Run in QEMU ──────────────────────────────────────────────────────────
+# ── 4. Create NVMe disk image if needed ─────────────────────────────────────
+$disk = "$root\hepos_disk.img"
+$qemu_img = "C:\Program Files\qemu\qemu-img.exe"
+if (-not (Test-Path $disk)) {
+    Write-Host "Creating 512MB NVMe disk..."
+    & $qemu_img create -f raw $disk 512M
+}
+
+# ── 5. Run in QEMU ──────────────────────────────────────────────────────────
 $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
 & $qemu `
     -M q35 `
@@ -57,6 +65,8 @@ $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
     -m 256M `
     -cdrom $iso `
     -boot d `
+    -drive file=$disk,if=none,id=nvme0,format=raw `
+    -device nvme,serial=heposv1,drive=nvme0 `
     -vga std `
     -serial stdio `
     -no-reboot
