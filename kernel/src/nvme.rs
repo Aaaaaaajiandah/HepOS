@@ -312,8 +312,10 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     serial::print("NVMe: Identify OK\n");
 
     // Identify Namespace 1 (CNS=0) — get block size and count
+    serial::print("NVMe: Identify Namespace...\n");
     let (ns_phys, ns_virt) = alloc_dma_page();
     ctrl.identify(0, ns_phys);
+    serial::print("NVMe: Namespace OK\n");
     unsafe {
         let ns = &*(ns_virt as *const IdNs);
         ctrl.lba_count = ns.nsze;
@@ -325,8 +327,11 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     // Create I/O queues (qid=1, size=QD, linked to cqid=1)
     let io_sq_phys = ctrl.io.sq_phys;
     let io_cq_phys = ctrl.io.cq_phys;
+    serial::print("NVMe: Create IO CQ...\n");
     ctrl.create_io_cq(1, io_cq_phys, QD as u16);
+    serial::print("NVMe: Create IO SQ...\n");
     ctrl.create_io_sq(1, io_sq_phys, QD as u16, 1);
+    serial::print("NVMe: IO queues ready\n");
 
     Some(ctrl)
 }
