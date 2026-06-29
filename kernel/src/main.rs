@@ -1,4 +1,4 @@
-#![no_std]
+﻿#![no_std]
 #![no_main]
 #![feature(stmt_expr_attributes)]
 extern crate alloc;
@@ -10,10 +10,7 @@ mod gdt;
 mod heap;
 mod hepfs;
 mod idt;
-<<<<<<< HEAD
 mod mouse;
-=======
->>>>>>> 41b662b (add paging and nvme support)
 mod nvme;
 mod paging;
 mod panic;
@@ -29,7 +26,7 @@ use limine::request::{FramebufferRequest, HhdmRequest};
 use limine::BaseRevision;
 use spin::Mutex;
 
-// Global display — used by exception handler and future modules
+// Global display â€” used by exception handler and future modules
 pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
 #[used] static BASE_REVISION:       BaseRevision       = BaseRevision::new();
@@ -128,7 +125,7 @@ extern "C" fn kmain() -> ! {
 
     serial::print("Scheduler ready\n");
 
-    // Enable interrupts — APIC timer will now fire
+    // Enable interrupts â€” APIC timer will now fire
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     // PCI enumeration
@@ -140,14 +137,11 @@ extern "C" fn kmain() -> ! {
         serial::print("\n");
     }
 
-<<<<<<< HEAD
-    // Disable interrupts for entire NVMe + FS init — the timer firing mid-MMIO
+    // Disable interrupts for entire NVMe + FS init â€” the timer firing mid-MMIO
     // causes a triple fault because the scheduler switches context before NVMe
     // queue setup is stable.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
 
-=======
->>>>>>> 41b662b (add paging and nvme support)
     // NVMe
     if let Some(mut ctrl) = nvme::init(&pci_devices) {
         serial::print("NVMe ready\n");
@@ -168,7 +162,6 @@ extern "C" fn kmain() -> ! {
         ctrl.read_blocks(0, 1, phys);
         let ok = unsafe { *(virt as *const u8) } == 0xAB;
         serial::print(if ok { "NVMe R/W OK\n" } else { "NVMe R/W FAIL\n" });
-<<<<<<< HEAD
 
         // HepFS
         if !hepfs::probe(&mut ctrl) {
@@ -194,20 +187,14 @@ extern "C" fn kmain() -> ! {
         serial::print("/ contents:\n");
         for (_, name) in &entries { serial::print("  "); serial::print(name); serial::print("\n"); }
 
-=======
->>>>>>> 41b662b (add paging and nvme support)
     } else {
         serial::print("No NVMe device found\n");
     }
 
-<<<<<<< HEAD
     // Re-enable interrupts now that NVMe + FS are stable
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     // Input devices
-=======
-    // PS/2 keyboard
->>>>>>> 41b662b (add paging and nvme support)
     ps2::init();
     mouse::init();
     serial::print("Input init\n");
@@ -226,6 +213,20 @@ fn task_blink() -> ! {
         // Poll input
         ps2::poll();
         mouse::poll();
+
+        // Keyboard-driven cursor (arrow keys move cursor until PS/2 mouse works)
+        while let Some(c) = ps2::read_char() {
+            let mut m = mouse::MOUSE.lock();
+            match c {
+                '\x1b' => {} // escape prefix (ignored)
+                'w' => m.y -= 4,
+                's' => m.y += 4,
+                'a' => m.x -= 4,
+                'd' => m.x += 4,
+                ' ' => m.buttons ^= 1, // spacebar = click
+                _ => {}
+            }
+        }
 
         let (mx, my, btn) = {
             let m = mouse::MOUSE.lock();
