@@ -7,6 +7,7 @@ mod apic;
 mod framebuffer;
 mod gdt;
 mod heap;
+mod hepfs;
 mod idt;
 mod nvme;
 mod paging;
@@ -140,6 +141,31 @@ extern "C" fn kmain() -> ! {
         ctrl.read_blocks(0, 1, phys);
         let ok = unsafe { *(virt as *const u8) } == 0xAB;
         serial::print(if ok { "NVMe R/W OK\n" } else { "NVMe R/W FAIL\n" });
+
+        // HepFS
+        if !hepfs::probe(&mut ctrl) {
+            serial::print("Formatting HepFS...\n");
+            hepfs::format(&mut ctrl);
+            serial::print("HepFS formatted\n");
+        } else {
+            serial::print("HepFS found\n");
+        }
+
+        // Smoke test: create dirs + file, write, read back
+        hepfs::create_dir(&mut ctrl, hepfs::ROOT_INO, "home");
+        hepfs::create_dir(&mut ctrl, hepfs::ROOT_INO, "etc");
+        let home = hepfs::lookup(&mut ctrl, "/home").unwrap();
+        let fno  = hepfs::create_file(&mut ctrl, home, "hello.txt");
+        hepfs::write_file(&mut ctrl, fno, b"Hello from HepOS!\n");
+        let data = hepfs::read_file(&mut ctrl, fno);
+        let s    = core::str::from_utf8(&data).unwrap_or("?");
+        serial::print("Read back: ");
+        serial::print(s);
+
+        let entries = hepfs::list_dir(&mut ctrl, hepfs::ROOT_INO);
+        serial::print("/ contents:\n");
+        for (_, name) in &entries { serial::print("  "); serial::print(name); serial::print("\n"); }
+
     } else {
         serial::print("No NVMe device found\n");
     }
