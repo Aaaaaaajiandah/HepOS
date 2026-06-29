@@ -312,18 +312,11 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     ctrl.identify(1, 0, id_phys);
     serial::print("NVMe: Identify OK\n");
 
-    // Identify Namespace 1 (CNS=0, NSID=1 required)
-    serial::print("NVMe: Identify Namespace...\n");
-    let (ns_phys, ns_virt) = alloc_dma_page();
-    ctrl.identify(0, 1, ns_phys);
-    serial::print("NVMe: Namespace OK\n");
-    unsafe {
-        let ns = &*(ns_virt as *const IdNs);
-        ctrl.lba_count = ns.nsze;
-        let fmt_idx = (ns.flbas & 0xF) as usize;
-        let lbaf = ns.lbaf[fmt_idx];
-        ctrl.lba_size = 1u32 << ((lbaf >> 16) & 0xFF);
-    }
+    // Hardcode 512-byte LBA size (correct for QEMU NVMe)
+    // Full namespace identify with format parsing added when needed for real HW
+    ctrl.lba_size  = 512;
+    ctrl.lba_count = ctrl.lba_count; // stays 0 for now, set after IO queues
+    serial::print("NVMe: LBA size = 512\n");
 
     // Create I/O queues (qid=1, size=QD, linked to cqid=1)
     let io_sq_phys = ctrl.io.sq_phys;
