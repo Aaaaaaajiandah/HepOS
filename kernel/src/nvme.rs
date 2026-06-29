@@ -237,6 +237,13 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     let to_ms  = (((cap >> 24) & 0xFF) as u64) * 500; // CSTS.RDY timeout in ms
 
     // Disable controller
+    // Disable interrupts for the duration of NVMe init to prevent timer
+    // interference with MMIO and queue setup.
+    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+
+    let csts0 = unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() };
+    serial::print_hex("NVMe: initial CSTS", csts0 as u64);
+
     serial::print("NVMe: disabling controller...\n");
     let cc = unsafe { (regs.add(REG_CC) as *const u32).read_volatile() };
     unsafe { (regs.add(REG_CC) as *mut u32).write_volatile(cc & !1); }
@@ -261,8 +268,8 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         (regs.add(REG_ASQ) as *mut u64).write_volatile(admin.sq_phys);
         (regs.add(REG_ACQ) as *mut u64).write_volatile(admin.cq_phys);
 
-        // CC: MPS=0 (4KB), AMS=0 (round-robin), CSS=0 (NVM), SHN=0, IOSQES=6 (64B), IOCQES=4 (16B), EN=1
-        (regs.add(REG_CC) as *mut u32).write_volatile((6 << 20) | (4 << 16) | 1);
+        // CC: IOCQES=4 (bits 23:20, 2^4=16B), IOSQES=6 (bits 19:16, 2^6=64B), EN=1
+        (regs.add(REG_CC) as *mut u32).write_volatile((4 << 20) | (6 << 16) | 1);
     }
 
     serial::print("NVMe: enabling controller...\n");
@@ -271,9 +278,12 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
     while unsafe { (regs.add(REG_CSTS) as *const u32).read_volatile() } & 1 == 0 {
         core::hint::spin_loop();
         spins += 1;
-        if spins > to_ms * 1_000 { panic!("NVMe enable timeout"); }
+        if spins > to_ms * 10_000_000 { panic!("NVMe enable timeout"); }
     }
     serial::print("NVMe: controller ready\n");
+
+    // Re-enable interrupts now that MMIO init is done
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     let mut ctrl = NvmeController {
         regs,
