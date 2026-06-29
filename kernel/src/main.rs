@@ -4,11 +4,13 @@
 extern crate alloc;
 
 mod apic;
+mod desktop;
 mod framebuffer;
 mod gdt;
 mod heap;
 mod hepfs;
 mod idt;
+mod mouse;
 mod nvme;
 mod paging;
 mod panic;
@@ -178,9 +180,25 @@ extern "C" fn kmain() -> ! {
     // Re-enable interrupts now that NVMe + FS are stable
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
-    // PS/2 keyboard
+    // Input devices
     ps2::init();
-    serial::print("PS/2 init\n");
+    mouse::init();
+    serial::print("Input init\n");
+
+    // Boot the desktop
+    {
+        let fb = FRAMEBUFFER_REQUEST.response()
+            .and_then(|r| r.framebuffers().first().copied())
+            .expect("no framebuffer");
+        let w = fb.width as usize;
+        let h = fb.height as usize;
+
+        let mut dt = desktop::Desktop::new(w, h);
+        dt.add_window("Welcome to HepOS", 80,  80,  360, 200);
+        dt.add_window("HepFS",            500, 100, 240, 180);
+        dt.add_window("Terminal",         200, 320, 400, 220);
+        *desktop::DESKTOP.lock() = Some(dt);
+    }
 
     serial::print("Boot complete\n");
 
@@ -192,32 +210,40 @@ fn task_idle() -> ! {
 }
 
 fn task_blink() -> ! {
-    let white  = framebuffer::Color::from_hex(0xE8E8E8);
-    let bg     = framebuffer::Color::from_hex(0x0D0D0D);
-    let cursor = framebuffer::Color::from_hex(0x6C8EFF);
-    let mut col: usize = 0;
-    let row: usize = 8; // text row in chars
     loop {
-        // Poll PS/2 (will use interrupt later)
+        // Poll input
         ps2::poll();
-        if let Some(c) = ps2::read_char() {
-            if let Some(d) = DISPLAY.lock().as_mut() {
-                if c == '\n' || col > 60 {
-                    col = 0;
-                } else {
-                    // erase cursor
-                    d.fill_rect(col * 9 + 24, row * 18, 8, 16, bg);
-                    // draw char
-                    let s: &[u8] = &[c as u8];
-                    let text = core::str::from_utf8(s).unwrap_or("?");
-                    d.draw_text(col * 9 + 24, row * 18, text, white, 1);
-                    col += 1;
-                    // draw cursor
-                    d.fill_rect(col * 9 + 24, row * 18 + 14, 8, 2, cursor);
+        mouse::poll();
+
+        let (mx, my, btn) = {
+            let m = mouse::MOUSE.lock();
+            (m.x, m.y, m.buttons)
+        };
+
+        // Update window manager with mouse state
+        {
+            let mut dt_guard = desktop::DESKTOP.lock();
+            if let Some(dt) = dt_guard.as_mut() {
+                dt.update_mouse(mx, my, btn);
+                let w = dt.fb_w;
+                let h = dt.fb_h;
+                let mut m = mouse::MOUSE.lock();
+                m.clamp(w as i32, h as i32);
+            }
+        }
+
+        // Render desktop to framebuffer
+        {
+            let dt_guard = desktop::DESKTOP.lock();
+            if let Some(dt) = dt_guard.as_ref() {
+                if let Some(display) = DISPLAY.lock().as_mut() {
+                    dt.render(display, mx, my);
                 }
             }
         }
-        core::hint::spin_loop();
+
+        // ~60fps: small spin delay
+        for _ in 0..50_000 { core::hint::spin_loop(); }
     }
 }
 

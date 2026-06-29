@@ -48,6 +48,11 @@ impl Display {
     pub fn height(&self) -> usize { self.height }
 
     #[inline]
+    pub fn put_pixel_pub(&mut self, x: usize, y: usize, c: Color) {
+        self.put_pixel(x, y, c);
+    }
+
+    #[inline]
     fn put_pixel(&mut self, x: usize, y: usize, c: Color) {
         if x >= self.width || y >= self.height { return; }
         let offset = y * self.pitch + x * self.bpp;
