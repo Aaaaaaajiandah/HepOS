@@ -1,12 +1,15 @@
 #![no_std]
 #![no_main]
+extern crate alloc;
 
 mod framebuffer;
 mod gdt;
+mod heap;
 mod idt;
 mod panic;
 mod pmm;
 mod serial;
+mod vmm;
 
 use framebuffer::Display;
 use limine::request::{FramebufferRequest, HhdmRequest};
@@ -32,8 +35,21 @@ extern "C" fn kmain() -> ! {
     serial::print("IDT loaded\n");
 
     let hhdm = HHDM_REQUEST.response().expect("no HHDM").offset;
+    vmm::init(hhdm);
     pmm::init(hhdm);
     serial::print("PMM init\n");
+
+    heap::HEAP.init();
+    serial::print("Heap init\n");
+
+    // smoke test: allocate and use a Vec
+    {
+        use alloc::vec::Vec;
+        let mut v: Vec<u32> = Vec::new();
+        for i in 0..16 { v.push(i); }
+        serial::print("Heap smoke test OK\n");
+        let _ = v;
+    }
 
     let fb = FRAMEBUFFER_REQUEST
         .response()
