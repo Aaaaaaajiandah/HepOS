@@ -54,6 +54,15 @@ static SCANCODE_MAP: [u8; 58] = [
 // Extended scancode state (0xE0 prefix)
 static EXTENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+static SHIFT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static CAPS: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static CTRL: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+pub fn shift_held() -> bool { SHIFT.load(core::sync::atomic::Ordering::Relaxed) }
+pub fn ctrl_held()  -> bool { CTRL .load(core::sync::atomic::Ordering::Relaxed) }
 
 // Special key codes (stored as u8 > 127, read as char via `b as char`)
 pub const KEY_UP:    u8 = 0x80;
@@ -64,15 +73,44 @@ pub const KEY_DEL:   u8 = 0x84;
 pub const KEY_HOME:  u8 = 0x85;
 pub const KEY_END:   u8 = 0x86;
 
+// Shifted symbols for US QWERTY
+static SHIFT_MAP: [u8; 58] = [
+    0,   0x1B, b'!', b'@', b'#', b'$', b'%', b'^',
+    b'&', b'*', b'(', b')', b'_', b'+', b'\x08', b'\t',
+    b'Q', b'W', b'E', b'R', b'T', b'Y', b'U', b'I',
+    b'O', b'P', b'{', b'}', b'\n', 0,   b'A', b'S',
+    b'D', b'F', b'G', b'H', b'J', b'K', b'L', b':',
+    b'"', b'~', 0,   b'|', b'Z', b'X', b'C', b'V',
+    b'B', b'N', b'M', b'<', b'>', b'?', 0,   b'*',
+    0,   b' ',
+];
+
 /// Called from keyboard interrupt handler (or polled).
 pub fn handle_scancode(sc: u8) {
+    use core::sync::atomic::Ordering::Relaxed;
+
     if sc == 0xE0 {
-        EXTENDED.store(true, core::sync::atomic::Ordering::Relaxed);
+        EXTENDED.store(true, Relaxed);
         return;
     }
-    let ext = EXTENDED.swap(false, core::sync::atomic::Ordering::Relaxed);
+    let ext = EXTENDED.swap(false, Relaxed);
 
-    if sc & 0x80 != 0 { return; } // key release
+    let release = sc & 0x80 != 0;
+    let base_sc = sc & 0x7F;
+
+    // Handle modifier keys (both make and break)
+    match base_sc {
+        0x2A | 0x36 => { SHIFT.store(!release, Relaxed); return; } // L/R shift
+        0x1D        => { CTRL .store(!release, Relaxed); return; } // Ctrl
+        0x3A if !release => { // Caps lock toggle on press
+            let c = CAPS.load(Relaxed);
+            CAPS.store(!c, Relaxed);
+            return;
+        }
+        _ => {}
+    }
+
+    if release { return; } // ignore all other key releases
 
     let ch: u8 = if ext {
         match sc {
@@ -86,8 +124,22 @@ pub fn handle_scancode(sc: u8) {
             _ => 0,
         }
     } else {
-        let sc = sc as usize;
-        if sc < SCANCODE_MAP.len() { SCANCODE_MAP[sc] } else { 0 }
+        let sc = base_sc as usize;
+        let shift = SHIFT.load(Relaxed);
+        let caps  = CAPS .load(Relaxed);
+        let ctrl  = CTRL .load(Relaxed);
+
+        let raw = if shift && sc < SHIFT_MAP.len() { SHIFT_MAP[sc] }
+                  else if sc < SCANCODE_MAP.len()  { SCANCODE_MAP[sc] }
+                  else { 0 };
+
+        // Caps lock inverts case for letters
+        let raw = if caps && raw.is_ascii_lowercase() { raw - 32 }
+                  else if caps && raw.is_ascii_uppercase() { raw + 32 }
+                  else { raw };
+
+        // Ctrl modifier: subtract 0x60 from lowercase letters → control codes
+        if ctrl && raw.is_ascii_lowercase() { raw - 0x60 } else { raw }
     };
 
     if ch != 0 { KEYBUF.lock().push(ch); }

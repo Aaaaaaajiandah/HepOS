@@ -415,6 +415,34 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
+            "edit" => {
+                if arg1.is_empty() {
+                    self.print_colored("usage: edit <file>\n", ERR);
+                } else {
+                    let full = if arg1.starts_with('/') {
+                        String::from(arg1)
+                    } else if self.cwd_path == "/" {
+                        alloc::format!("/{}", arg1)
+                    } else {
+                        alloc::format!("{}/{}", self.cwd_path, arg1)
+                    };
+                    crate::editor::open(&full);
+                    // Un-minimize editor window and focus it
+                    {
+                        let mut dt = crate::desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_mut() {
+                            if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+                                w.minimized = false;
+                                w.title = alloc::format!("Editor — {}", arg1);
+                            }
+                            dt.dirty = true;
+                        }
+                    }
+                    *crate::FOCUSED_WIN.lock() = Some(3);
+                    self.print_colored("Editor opened  Ctrl+S=save  Ctrl+Q=close\n", OK);
+                }
+            }
+
             "shutdown" => { self.print_colored("Shutting down...\n", ERR); crate::acpi::shutdown(); }
             "reboot"   => { self.print_colored("Rebooting...\n",    ERR); crate::acpi::reboot(); }
 

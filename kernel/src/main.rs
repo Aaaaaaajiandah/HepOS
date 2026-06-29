@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod acpi;
 mod apic;
+mod editor;
 mod rtc;
 mod desktop;
 mod framebuffer;
@@ -113,6 +114,8 @@ extern "C" fn kmain() -> ! {
         dt.add_window("Welcome to HepOS", 20,  50,  300, 160);
         dt.add_window("HepFS",            340, 50,  260, 160);
         dt.add_window("Terminal",         20,  240, 580, 200);
+        // Editor window (id=3) — hidden until `edit` command opens a file
+        dt.add_window("Editor",           60,  40,  580, 380);
         *desktop::DESKTOP.lock() = Some(dt);
     }
 
@@ -120,7 +123,15 @@ extern "C" fn kmain() -> ! {
     terminal::init();
     serial::print("Terminal init\n");
 
-    // Terminal window is id=2 (third added); focus it by default
+    // Minimize editor until a file is opened; focus terminal (id=2)
+    {
+        let mut dt = desktop::DESKTOP.lock();
+        if let Some(dt) = dt.as_mut() {
+            if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+                w.minimized = true;
+            }
+        }
+    }
     *FOCUSED_WIN.lock() = Some(2);
 
     // Wire timer interrupt into IDT
@@ -291,8 +302,27 @@ fn task_blink() -> ! {
                     // ESC → unfocus, enter cursor mode
                     *FOCUSED_WIN.lock() = None;
                 }
+                _ if focused == Some(3) => {
+                    // Editor has focus
+                    let mut eg = editor::EDITOR.lock();
+                    if let Some(ed) = eg.as_mut() {
+                        ed.on_key(c);
+                        if !ed.open {
+                            // Editor closed — minimize window, refocus terminal
+                            drop(eg);
+                            let mut dt = desktop::DESKTOP.lock();
+                            if let Some(dt) = dt.as_mut() {
+                                if let Some(w) = dt.windows.iter_mut().find(|w| w.title.as_str() == "Editor") {
+                                    w.minimized = true;
+                                }
+                                dt.dirty = true;
+                            }
+                            *FOCUSED_WIN.lock() = Some(2);
+                        }
+                    }
+                }
                 _ if focused.is_some() => {
-                    // A window has focus — send to terminal
+                    // Terminal has focus
                     let mut tg = terminal::TERMINAL.lock();
                     if let Some(t) = tg.as_mut() { t.on_key(c); }
                 }
@@ -385,7 +415,25 @@ fn task_blink() -> ! {
                     }
                 }
 
-                // 3. Render HepFS window — directory listing
+                // 3. Render editor if open
+                {
+                    let editor_rect = {
+                        let dt = desktop::DESKTOP.lock();
+                        dt.as_ref().and_then(|d| {
+                            d.windows.iter()
+                                .find(|w| !w.minimized && w.title.as_str() == "Editor")
+                                .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
+                        })
+                    };
+                    if let Some((ex, ey, ew, eh)) = editor_rect {
+                        let mut eg = editor::EDITOR.lock();
+                        if let Some(ed) = eg.as_mut() {
+                            ed.render(display, ex, ey, ew, eh);
+                        }
+                    }
+                }
+
+                // 4. Render HepFS window — directory listing
                 render_hepfs_window(display);
 
                 // 4. Render Welcome window — system info
