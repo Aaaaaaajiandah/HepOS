@@ -297,15 +297,21 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
 
     // Re-enable interrupts now that MMIO init is done
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    serial::print("NVMe: interrupts re-enabled\n");
+
+    serial::print("NVMe: creating IO queue...\n");
+    let io_q = make_queue(regs, 1, dstrd);
+    serial::print("NVMe: IO queue created\n");
 
     let mut ctrl = NvmeController {
         regs,
         admin,
-        io: make_queue(regs, 1, dstrd),
+        io: io_q,
         cid: 0,
         lba_size: 512,
         lba_count: 0,
     };
+    serial::print("NVMe: ctrl struct built\n");
 
     // Identify Controller (CNS=1)
     serial::print("NVMe: sending Identify...\n");
