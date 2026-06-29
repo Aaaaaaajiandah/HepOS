@@ -352,15 +352,16 @@ fn task_blink() -> ! {
                 // 4. Render Welcome window — system info
                 render_welcome_window(display);
 
-                // 5. Draw focus indicator (blue border on focused window)
+                // 5. Cursor mode indicator — yellow crosshair when unfocused
                 {
                     let focused = *FOCUSED_WIN.lock();
                     if focused.is_none() {
-                        // Cursor mode: draw cursor crosshair
                         let cx = mx as usize;
                         let cy = my as usize;
-                        display.fill_rect(cx.saturating_sub(6), cy, 13, 1, framebuffer::Color::from_hex(0xFFFFFF));
-                        display.fill_rect(cx, cy.saturating_sub(6), 1, 13, framebuffer::Color::from_hex(0xFFFFFF));
+                        // Yellow crosshair = cursor mode
+                        let col = framebuffer::Color::from_hex(0xFFFF00);
+                        display.fill_rect(cx.saturating_sub(8), cy, 17, 1, col);
+                        display.fill_rect(cx, cy.saturating_sub(8), 1, 17, col);
                     }
                 }
             }
