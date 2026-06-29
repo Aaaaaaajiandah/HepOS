@@ -28,8 +28,11 @@ use limine::request::{FramebufferRequest, HhdmRequest};
 use limine::BaseRevision;
 use spin::Mutex;
 
-// Global display â€” used by exception handler and future modules
+// Global display — used by exception handler and future modules
 pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
+
+// Focus: None = cursor mode (WASD moves cursor), Some(id) = window has keyboard focus
+pub static FOCUSED_WIN: Mutex<Option<usize>> = Mutex::new(None);
 
 #[used] static BASE_REVISION:       BaseRevision       = BaseRevision::new();
 #[used] static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
@@ -116,6 +119,9 @@ extern "C" fn kmain() -> ! {
     terminal::init();
     serial::print("Terminal init\n");
 
+    // Terminal window is id=2 (third added); focus it by default
+    *FOCUSED_WIN.lock() = Some(2);
+
     // Wire timer interrupt into IDT
     idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
 
@@ -194,6 +200,9 @@ extern "C" fn kmain() -> ! {
         serial::print("/ contents:\n");
         for (_, name) in &entries { serial::print("  "); serial::print(name); serial::print("\n"); }
 
+        // Store controller globally so apps can use it
+        *nvme::CONTROLLER.lock() = Some(ctrl);
+
     } else {
         serial::print("No NVMe device found\n");
     }
@@ -232,12 +241,47 @@ fn task_blink() -> ! {
             btn = m.buttons;
         }
 
-        // All keyboard input goes to terminal
+        // Keyboard routing depends on focus
         let mut ps2_had_input = false;
         while let Some(c) = ps2::read_char() {
             ps2_had_input = true;
-            let mut tg = terminal::TERMINAL.lock();
-            if let Some(t) = tg.as_mut() { t.on_key(c); }
+            let focused = *FOCUSED_WIN.lock();
+
+            match c {
+                '\x1b' => {
+                    // ESC → unfocus, enter cursor mode
+                    *FOCUSED_WIN.lock() = None;
+                }
+                _ if focused.is_some() => {
+                    // A window has focus — send to terminal
+                    let mut tg = terminal::TERMINAL.lock();
+                    if let Some(t) = tg.as_mut() { t.on_key(c); }
+                }
+                // Cursor mode (no focus)
+                'w' => my -= 6,
+                's' => my += 6,
+                'a' => mx -= 6,
+                'd' => mx += 6,
+                ' ' => {
+                    // Click: focus the window under the cursor
+                    let clicked_id = {
+                        let dt = desktop::DESKTOP.lock();
+                        dt.as_ref().and_then(|d| {
+                            d.windows.iter().rev()
+                                .find(|w| !w.minimized && w.content_hit(mx, my))
+                                .map(|w| w.id)
+                        })
+                    };
+                    if let Some(id) = clicked_id {
+                        *FOCUSED_WIN.lock() = Some(id);
+                        let mut dt = desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_mut() {
+                            dt.dirty = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         // Clamp and write back mouse state
@@ -301,12 +345,100 @@ fn task_blink() -> ! {
                         term.dirty = false;
                     }
                 }
+
+                // 3. Render HepFS window — directory listing
+                render_hepfs_window(display);
+
+                // 4. Render Welcome window — system info
+                render_welcome_window(display);
+
+                // 5. Draw focus indicator (blue border on focused window)
+                {
+                    let focused = *FOCUSED_WIN.lock();
+                    if focused.is_none() {
+                        // Cursor mode: draw cursor crosshair
+                        let cx = mx as usize;
+                        let cy = my as usize;
+                        display.fill_rect(cx.saturating_sub(6), cy, 13, 1, framebuffer::Color::from_hex(0xFFFFFF));
+                        display.fill_rect(cx, cy.saturating_sub(6), 1, 13, framebuffer::Color::from_hex(0xFFFFFF));
+                    }
+                }
             }
         }
 
         // ~60fps
         for _ in 0..1_200_000 { core::hint::spin_loop(); }
     }
+}
+
+fn window_rect(title: &str) -> Option<(usize, usize, usize, usize)> {
+    let dt = desktop::DESKTOP.lock();
+    dt.as_ref().and_then(|d| {
+        d.windows.iter()
+            .find(|w| !w.minimized && w.title.as_str() == title)
+            .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
+    })
+}
+
+fn render_hepfs_window(display: &mut framebuffer::Display) {
+    let Some((wx, wy, ww, wh)) = window_rect("HepFS") else { return; };
+    let bg   = framebuffer::Color::from_hex(0x0C0C0C);
+    let acc  = framebuffer::Color::from_hex(0x6C8EFF);
+    let text = framebuffer::Color::from_hex(0xE8E8E8);
+    let dim  = framebuffer::Color::from_hex(0x888888);
+
+    display.fill_rect(wx, wy, ww, wh, bg);
+    display.fill_rect(wx, wy, ww, 2, acc);
+    display.draw_text(wx + 4, wy + 6, "/ (root)", acc, 1);
+
+    let mut ctrl = nvme::CONTROLLER.lock();
+    if let Some(ctrl) = ctrl.as_mut() {
+        let entries = hepfs::list_dir(ctrl, hepfs::ROOT_INO);
+        let mut y = wy + 22;
+        for (ino, name) in &entries {
+            if y + 14 > wy + wh { break; }
+            let inode = hepfs::read_inode(ctrl, *ino);
+            let prefix = if inode.flags == hepfs::F_DIR { "d " } else { "f " };
+            display.draw_text(wx + 4, y, prefix, dim, 1);
+            display.draw_text(wx + 22, y, name, text, 1);
+            y += 14;
+        }
+        if entries.is_empty() {
+            display.draw_text(wx + 4, wy + 22, "(empty)", dim, 1);
+        }
+    } else {
+        display.draw_text(wx + 4, wy + 22, "No NVMe", dim, 1);
+    }
+}
+
+fn render_welcome_window(display: &mut framebuffer::Display) {
+    let Some((wx, wy, ww, wh)) = window_rect("Welcome to HepOS") else { return; };
+    let bg   = framebuffer::Color::from_hex(0x0C0C0C);
+    let acc  = framebuffer::Color::from_hex(0x6C8EFF);
+    let text = framebuffer::Color::from_hex(0xE8E8E8);
+    let dim  = framebuffer::Color::from_hex(0x888888);
+    let ok   = framebuffer::Color::from_hex(0x6BFF8E);
+
+    display.fill_rect(wx, wy, ww, wh, bg);
+    display.fill_rect(wx, wy, ww, 2, acc);
+
+    let mut y = wy + 6;
+    display.draw_text(wx + 4, y, "HepOS v0.1", acc, 1);   y += 16;
+    display.draw_text(wx + 4, y, "x86_64 exokernel", dim, 1); y += 14;
+
+    let free_mb  = pmm::free_pages() * 4 / 1024;
+    let total_mb = pmm::total_pages() * 4 / 1024;
+    let mut buf = [0u8; 64];
+    let s = fmt_mem(free_mb, total_mb, &mut buf);
+    display.draw_text(wx + 4, y, s, text, 1); y += 14;
+
+    let has_nvme = nvme::CONTROLLER.lock().is_some();
+    display.draw_text(wx + 4, y, if has_nvme { "NVMe: OK" } else { "NVMe: --" },
+        if has_nvme { ok } else { dim }, 1); y += 14;
+
+    display.draw_text(wx + 4, y, "HepFS: OK", ok, 1); y += 14;
+    display.draw_text(wx + 4, y, "ESC=cursor WASD=move", dim, 1);
+    let _ = ww; let _ = wh;
 }
 
 fn fmt_mem<'a>(free_mb: u64, total_mb: u64, buf: &'a mut [u8; 64]) -> &'a str {

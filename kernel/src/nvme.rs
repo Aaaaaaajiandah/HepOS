@@ -76,6 +76,9 @@ pub struct NvmeController {
 }
 
 unsafe impl Send for NvmeController {}
+unsafe impl Sync for NvmeController {}
+
+pub static CONTROLLER: spin::Mutex<Option<NvmeController>> = spin::Mutex::new(None);
 
 impl NvmeController {
     fn read32(&self, off: usize) -> u32 {
