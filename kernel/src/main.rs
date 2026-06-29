@@ -3,6 +3,7 @@
 #![feature(stmt_expr_attributes)]
 extern crate alloc;
 
+mod acpi;
 mod apic;
 mod desktop;
 mod framebuffer;
@@ -19,6 +20,7 @@ mod pmm;
 mod ps2;
 mod scheduler;
 mod serial;
+mod terminal;
 mod vmm;
 
 use framebuffer::Display;
@@ -103,11 +105,16 @@ extern "C" fn kmain() -> ! {
         let w = fb.width as usize;
         let h = fb.height as usize;
         let mut dt = desktop::Desktop::new(w, h);
-        dt.add_window("Welcome to HepOS", 80,  80,  360, 200);
-        dt.add_window("HepFS",            500, 100, 240, 180);
-        dt.add_window("Terminal",         200, 320, 400, 220);
+        // Window positions chosen to fit common resolutions (640×480 min)
+        dt.add_window("Welcome to HepOS", 20,  50,  300, 160);
+        dt.add_window("HepFS",            340, 50,  260, 160);
+        dt.add_window("Terminal",         20,  240, 580, 200);
         *desktop::DESKTOP.lock() = Some(dt);
     }
+
+    // Init terminal NOW before sti so task_blink sees it immediately
+    terminal::init();
+    serial::print("Terminal init\n");
 
     // Wire timer interrupt into IDT
     idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
@@ -209,58 +216,104 @@ fn task_idle() -> ! {
 }
 
 fn task_blink() -> ! {
+    let mut mx: i32 = 400;
+    let mut my: i32 = 300;
+    let mut btn: u8  = 0;
+
     loop {
-        // Poll input
         ps2::poll();
         mouse::poll();
 
-        // Keyboard-driven cursor (arrow keys move cursor until PS/2 mouse works)
-        while let Some(c) = ps2::read_char() {
-            let mut m = mouse::MOUSE.lock();
-            match c {
-                '\x1b' => {} // escape prefix (ignored)
-                'w' => m.y -= 4,
-                's' => m.y += 4,
-                'a' => m.x -= 4,
-                'd' => m.x += 4,
-                ' ' => m.buttons ^= 1, // spacebar = click
-                _ => {}
-            }
-        }
-
-        let (mx, my, btn) = {
-            let m = mouse::MOUSE.lock();
-            (m.x, m.y, m.buttons)
-        };
-
-        // Update window manager with mouse state
+        // PS/2 mouse updates (relative movement from mouse::poll)
         {
-            let mut dt_guard = desktop::DESKTOP.lock();
-            if let Some(dt) = dt_guard.as_mut() {
-                dt.update_mouse(mx, my, btn);
-                let w = dt.fb_w;
-                let h = dt.fb_h;
-                let mut m = mouse::MOUSE.lock();
-                m.clamp(w as i32, h as i32);
-            }
+            let m = mouse::MOUSE.lock();
+            mx = m.x;
+            my = m.y;
+            btn = m.buttons;
         }
 
-        // Render desktop only when something changed
-        let should_render = desktop::DESKTOP.lock()
-            .as_ref().map(|dt| dt.dirty).unwrap_or(false);
-
-        if should_render {
-            let mut dt_guard = desktop::DESKTOP.lock();
-            if let Some(dt) = dt_guard.as_mut() {
-                dt.dirty = false;
-                let (cx, cy) = (dt.prev_cx, dt.prev_cy);
-                if let Some(display) = DISPLAY.lock().as_mut() {
-                    dt.render(display, cx, cy);
+        // Keyboard: WASD moves cursor; everything else → terminal
+        let mut ps2_had_input = false;
+        while let Some(c) = ps2::read_char() {
+            ps2_had_input = true;
+            match c {
+                'w' => my -= 6,
+                's' => my += 6,
+                'a' => mx -= 6,
+                'd' => mx += 6,
+                ' ' => btn ^= 1,
+                other => {
+                    let mut tg = terminal::TERMINAL.lock();
+                    if let Some(t) = tg.as_mut() { t.on_key(other); }
                 }
             }
         }
 
-        // ~60fps cap
+        // Clamp and write back mouse state
+        let (fb_w, fb_h) = {
+            let dt = desktop::DESKTOP.lock();
+            dt.as_ref().map(|d| (d.fb_w as i32, d.fb_h as i32)).unwrap_or((1280, 720))
+        };
+        mx = mx.clamp(0, fb_w - 1);
+        my = my.clamp(0, fb_h - 1);
+        {
+            let mut m = mouse::MOUSE.lock();
+            m.x = mx; m.y = my; m.buttons = btn;
+        }
+
+        // Update WM (update_mouse sets dirty flag if position changed)
+        {
+            let mut dt_guard = desktop::DESKTOP.lock();
+            if let Some(dt) = dt_guard.as_mut() {
+                dt.update_mouse(mx, my, btn);
+            }
+        }
+
+        // Also force dirty after keyboard input so terminal text appears
+        if ps2_had_input {
+            let mut dt = desktop::DESKTOP.lock();
+            if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+            let mut tm = terminal::TERMINAL.lock();
+            if let Some(tm) = tm.as_mut() { tm.dirty = true; }
+        }
+
+        // Render desktop + terminal every frame when dirty
+        let desktop_dirty = desktop::DESKTOP.lock().as_ref().map(|d| d.dirty).unwrap_or(false);
+        let term_dirty    = terminal::TERMINAL.lock().as_ref().map(|t| t.dirty).unwrap_or(false);
+
+        if desktop_dirty || term_dirty || ps2_had_input {
+            if let Some(display) = DISPLAY.lock().as_mut() {
+                // 1. Render desktop
+                {
+                    let mut dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_mut() {
+                        dt.dirty = false;
+                        dt.render(display, mx, my);
+                    }
+                }
+
+                // 2. Render terminal — hardcoded at Terminal window content pos
+                {
+                    let mut tg = terminal::TERMINAL.lock();
+                    if let Some(term) = tg.as_mut() {
+                        // Find Terminal window position dynamically
+                        let (tx, ty, tw, th) = {
+                            let dt = desktop::DESKTOP.lock();
+                            dt.as_ref()
+                                .and_then(|d| d.windows.iter()
+                                    .find(|w| !w.minimized && w.title.as_str() == "Terminal")
+                                    .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
+                                )
+                                .unwrap_or((20, 240, 580, 200)) // fallback
+                        };
+                        term.render(display, tx, ty, tw, th);
+                        term.dirty = false;
+                    }
+                }
+            }
+        }
+
+        // ~60fps
         for _ in 0..1_200_000 { core::hint::spin_loop(); }
     }
 }
