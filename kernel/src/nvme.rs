@@ -166,6 +166,8 @@ fn q_submit(q: &mut Queue, cid: u16, mut cmd: SqEntry) {
 }
 
 fn q_wait(q: &mut Queue, cid: u16) -> u16 {
+    use crate::serial;
+    let mut spins = 0u64;
     loop {
         let e = unsafe { q.cq.add(q.cq_head as usize).read_volatile() };
         if (e.status & 1) == q.phase as u16 && e.cid == cid {
@@ -176,6 +178,17 @@ fn q_wait(q: &mut Queue, cid: u16) -> u16 {
             return s;
         }
         core::hint::spin_loop();
+        spins += 1;
+        if spins == 50_000_000 {
+            serial::print_hex("NVMe: waiting for cid", cid as u64);
+            serial::print_hex("NVMe: CQ entry status", e.status as u64);
+            serial::print_hex("NVMe: CQ entry cid",    e.cid as u64);
+            serial::print_hex("NVMe: phase expected",  q.phase as u64);
+        }
+        if spins > 200_000_000 {
+            serial::print("NVMe: cmd timeout, giving up\n");
+            return 0xFFF;
+        }
     }
 }
 
@@ -294,9 +307,11 @@ pub fn init(devices: &[pci::PciDevice]) -> Option<NvmeController> {
         lba_count: 0,
     };
 
-    // Identify Controller (CNS=1) — just to confirm controller works
+    // Identify Controller (CNS=1)
+    serial::print("NVMe: sending Identify...\n");
     let (id_phys, _) = alloc_dma_page();
     ctrl.identify(1, id_phys);
+    serial::print("NVMe: Identify OK\n");
 
     // Identify Namespace 1 (CNS=0) — get block size and count
     let (ns_phys, ns_virt) = alloc_dma_page();
