@@ -11,6 +11,7 @@ mod net;
 mod rtc;
 mod rtl8139;
 mod virtio_net;
+mod xhci;
 mod desktop;
 mod framebuffer;
 mod gdt;
@@ -139,26 +140,7 @@ extern "C" fn kmain() -> ! {
     }
     *FOCUSED_WIN.lock() = Some(2);
 
-    // Wire timer interrupt into IDT
-    idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
-
-    apic::init();
-    serial::print("APIC init\n");
-
-    // Add two tasks so the scheduler has something to switch between
-    {
-        let mut sched = scheduler::SCHEDULER.lock();
-        sched.add(scheduler::Task::new(0, "idle",  task_idle));
-        sched.add(scheduler::Task::new(1, "blink", task_blink));
-        sched.tasks[0].state = scheduler::TaskState::Running;
-    }
-
-    serial::print("Scheduler ready\n");
-
-    // Enable interrupts â€” APIC timer will now fire
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-
-    // PCI enumeration
+    // PCI enumeration (interrupts still off — APIC not started yet)
     let pci_devices = pci::enumerate();
     // Store for lspci command
     *PCI_DEVS.lock() = pci_devices.clone();
@@ -168,11 +150,6 @@ extern "C" fn kmain() -> ! {
         serial::print(pci::class_name(d.class, d.subclass));
         serial::print("\n");
     }
-
-    // Disable interrupts for entire NVMe + FS init â€” the timer firing mid-MMIO
-    // causes a triple fault because the scheduler switches context before NVMe
-    // queue setup is stable.
-    unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
 
     // NVMe
     if let Some(mut ctrl) = nvme::init(&pci_devices) {
@@ -222,37 +199,16 @@ extern "C" fn kmain() -> ! {
         // Store controller globally so apps can use it
         *nvme::CONTROLLER.lock() = Some(ctrl);
 
-        // Write kernel manifest to HepFS
+        // Write kernel manifest to HepFS (skipped if already exists)
         {
             let mut c = nvme::CONTROLLER.lock();
             if let Some(ctrl) = c.as_mut() {
-                // Create /kernel.txt if it doesn't exist
                 if hepfs::lookup(ctrl, "/kernel.txt").is_none() {
                     let ino = hepfs::create_file(ctrl, hepfs::ROOT_INO, "kernel.txt");
                     let mut db = [0u8; 11];
                     let date = rtc::fmt_date(&mut db);
                     let content = alloc::format!(
-                        "HepOS Kernel Manifest\n\
-                         =====================\n\
-                         Version:  v0.1\n\
-                         Arch:     x86_64\n\
-                         Type:     Exokernel (Rust no_std)\n\
-                         Bootloader: Limine v9\n\
-                         Date:     {}\n\
-                         Repo:     github.com/The-Hep-Group/HepOS\n\
-                         License:  MIT\n\
-                         \n\
-                         Subsystems:\n\
-                           PMM (bitmap, >1MB pages)\n\
-                           Heap (bump allocator)\n\
-                           Paging (HHDM + map_mmio)\n\
-                           x2APIC timer (10ms tick)\n\
-                           Preemptive scheduler\n\
-                           HepFS (flat inode, 4KB blocks)\n\
-                           NVMe driver\n\
-                           PS/2 keyboard+mouse\n\
-                           GOP framebuffer compositor\n\
-                           ACPI shutdown\n",
+                        "HepOS v0.1 | {} | x86_64 exokernel\n",
                         date
                     );
                     hepfs::write_file(ctrl, ino, content.as_bytes());
@@ -264,9 +220,6 @@ extern "C" fn kmain() -> ! {
         serial::print("No NVMe device found\n");
     }
 
-    // Re-enable interrupts now that NVMe + FS are stable
-    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-
     // Networking — try RTL8139 first (simplest QEMU NIC), then e1000
     rtl8139::init(&pci_devices);
     if rtl8139::NIC.lock().is_none() { e1000::init(&pci_devices); }
@@ -276,9 +229,26 @@ extern "C" fn kmain() -> ! {
     // Input devices
     ps2::init();
     mouse::init();
+    xhci::init(&pci_devices);
     serial::print("Input init\n");
 
     serial::print("Boot complete\n");
+
+    // Register scheduler tasks and start APIC timer AFTER all init is stable.
+    // First timer tick switches from kmain → task_blink; task_blink runs forever
+    // (polling-based, doesn't need interrupts enabled).
+    {
+        let mut sched = scheduler::SCHEDULER.lock();
+        sched.add(scheduler::Task::new(0, "idle",  task_idle));
+        sched.add(scheduler::Task::new(1, "blink", task_blink));
+        sched.tasks[0].state = scheduler::TaskState::Running;
+    }
+    idt::set_handler(apic::timer_vector(), idt::timer_stub as u64);
+    apic::init();
+    serial::print("APIC init\n");
+
+    // Enable interrupts — first timer tick will switch to task_blink
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
     loop { core::hint::spin_loop(); }
 }
@@ -296,7 +266,16 @@ fn task_blink() -> ! {
         ps2::poll();
         mouse::poll();
 
-        // PS/2 mouse updates (relative movement from mouse::poll)
+        // XHCI USB tablet — absolute coordinates (overrides PS/2 relative if available)
+        {
+            let (fw, fh) = {
+                let dt = desktop::DESKTOP.lock();
+                dt.as_ref().map(|d| (d.fb_w as u32, d.fb_h as u32)).unwrap_or((640, 480))
+            };
+            xhci::poll_mouse(fw, fh);
+        }
+
+        // PS/2 or USB mouse updates
         {
             let m = mouse::MOUSE.lock();
             mx = m.x;

@@ -38,7 +38,7 @@ $iso = "$root\hepos.iso"
 $unix_iso_root = & C:\msys64\usr\bin\cygpath.exe -u $iso_root
 $unix_iso      = & C:\msys64\usr\bin\cygpath.exe -u $iso
 
-xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin `
+& "C:\msys64\usr\bin\xorriso.exe" -as mkisofs -b boot/limine/limine-bios-cd.bin `
     -no-emul-boot -boot-load-size 4 -boot-info-table `
     --efi-boot boot/limine/limine-uefi-cd.bin `
     -efi-boot-part --efi-boot-image --protective-msdos-label `
@@ -69,6 +69,8 @@ $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
     -device nvme,serial=heposv1,drive=nvme0 `
     -netdev user,id=net0 `
     -device rtl8139,netdev=net0 `
+    -device qemu-xhci,id=xhci `
+    -device usb-tablet,bus=xhci.0 `
     -vga std `
     -display sdl,window-close=off `
     -serial stdio `
