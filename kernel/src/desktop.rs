@@ -104,7 +104,7 @@ impl Desktop {
         id
     }
 
-    fn bring_to_front(&mut self, id: usize) {
+    pub fn bring_to_front(&mut self, id: usize) {
         if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
             let win = self.windows.remove(pos);
             self.windows.push(win);

@@ -139,6 +139,11 @@ impl Terminal {
                     self.lines[self.row][self.col] = Cell::blank();
                 }
             }
+            b'\x03' => { // Ctrl+C — cancel current input
+                self.cmd_buf.clear();
+                self.print_colored("^C\n", ERR);
+                self.show_prompt();
+            }
             b'\x0C' | b'\x0B' => { // Ctrl+L or Ctrl+K = clear
                 for line in &mut self.lines { *line = [Cell::blank(); COLS]; }
                 self.col = 0; self.row = 0;
@@ -427,15 +432,15 @@ impl Terminal {
                         alloc::format!("{}/{}", self.cwd_path, arg1)
                     };
                     crate::editor::open(&full);
-                    // Un-minimize editor window (id=3) and focus it
+                    // Un-minimize editor window (id=3), bring to front, focus it
                     {
                         let mut dt = crate::desktop::DESKTOP.lock();
                         if let Some(dt) = dt.as_mut() {
                             if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
                                 w.minimized = false;
-                                // Show filename in title
                                 w.title = alloc::format!("Editor: {}", arg1);
                             }
+                            dt.bring_to_front(3);
                             dt.dirty = true;
                         }
                     }
