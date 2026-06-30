@@ -2,7 +2,19 @@
 //! Static config: IP = 10.0.2.15, GW = 10.0.2.2, netmask = 255.255.255.0.
 
 use alloc::{vec, vec::Vec};
-use crate::e1000::NIC;
+// Use RTL8139 if available, otherwise e1000
+fn with_nic<T, F: FnOnce(&mut dyn NicOps) -> T>(f: F) -> Option<T> {
+    if let Some(n) = crate::rtl8139::NIC.lock().as_mut() {
+        return Some(f(n));
+    }
+    if let Some(n) = crate::e1000::NIC.lock().as_mut() {
+        return Some(f(n));
+    }
+    None
+}
+trait NicOps { fn send(&mut self, d: &[u8]); fn recv(&mut self) -> Option<alloc::vec::Vec<u8>>; }
+impl NicOps for crate::rtl8139::Rtl8139 { fn send(&mut self,d:&[u8]){self.send(d)} fn recv(&mut self)->Option<alloc::vec::Vec<u8>>{self.recv()} }
+impl NicOps for crate::e1000::E1000 { fn send(&mut self,d:&[u8]){self.send(d)} fn recv(&mut self)->Option<alloc::vec::Vec<u8>>{self.recv()} }
 
 // Our static network config (QEMU SLiRP defaults)
 pub const MY_IP:  [u8; 4] = [10, 0, 2, 15];
@@ -10,8 +22,11 @@ pub const GW_IP:  [u8; 4] = [10, 0, 2, 2];
 pub const BCAST:  [u8; 4] = [10, 0, 2, 255];
 pub const MASK:   [u8; 4] = [255, 255, 255, 0];
 
+pub fn my_mac_pub() -> [u8; 6] { my_mac() }
 fn my_mac() -> [u8; 6] {
-    NIC.lock().as_ref().map(|n| n.mac).unwrap_or([0x52,0x54,0,0x12,0x34,0x56])
+    if let Some(n) = crate::rtl8139::NIC.lock().as_ref() { return n.mac; }
+    if let Some(n) = crate::e1000::NIC.lock().as_ref()   { return n.mac; }
+    [0x52,0x54,0,0x12,0x34,0x56]
 }
 
 // ── Ethernet ─────────────────────────────────────────────────────────────────
@@ -22,8 +37,7 @@ fn eth_send(dst_mac: [u8; 6], etype: u16, payload: &[u8]) {
     f.push((etype >> 8) as u8);
     f.push(etype as u8);
     f.extend_from_slice(payload);
-    let mut nic = NIC.lock();
-    if let Some(nic) = nic.as_mut() { nic.send(&f); }
+    with_nic(|n| n.send(&f));
 }
 
 // ── ARP ───────────────────────────────────────────────────────────────────────
@@ -177,8 +191,8 @@ pub fn handle_frame(frame: &[u8]) {
 pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
     use alloc::format;
     // NIC check
-    if NIC.lock().is_none() {
-        return format!("ping: no NIC - run netstart first");
+    if crate::rtl8139::NIC.lock().is_none() && crate::e1000::NIC.lock().is_none() {
+        return format!("ping: no NIC found");
     }
 
     // Skip ARP — QEMU SLiRP gateway MAC is always 52:55:0a:00:02:02
@@ -193,7 +207,7 @@ pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
 
     // Step 3: poll for ICMP reply (~250ms total)
     for _ in 0..500u32 {
-        let frame = { NIC.lock().as_mut().and_then(|n| n.recv()) };
+        let frame = with_nic(|n| n.recv()).flatten();
         if let Some(f) = frame { handle_frame(&f); }
         for _ in 0..40_000u32 { core::hint::spin_loop(); }
         if let Some(got_seq) = *PING_REPLY.lock() {

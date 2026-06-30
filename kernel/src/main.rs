@@ -9,6 +9,7 @@ mod editor;
 mod e1000;
 mod net;
 mod rtc;
+mod rtl8139;
 mod virtio_net;
 mod desktop;
 mod framebuffer;
@@ -266,9 +267,9 @@ extern "C" fn kmain() -> ! {
     // Re-enable interrupts now that NVMe + FS are stable
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
 
-    // Networking (e1000 + virtio-net both tried)
-    e1000::init(&pci_devices);
-    virtio_net::init(&pci_devices);
+    // Networking — try RTL8139 first (simplest QEMU NIC), then e1000
+    rtl8139::init(&pci_devices);
+    if rtl8139::NIC.lock().is_none() { e1000::init(&pci_devices); }
     net::arp_announce();
     serial::print("Network init\n");
 

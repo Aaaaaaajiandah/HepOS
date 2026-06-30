@@ -490,14 +490,22 @@ impl Terminal {
                         mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]));
                     self.print(&alloc::format!("e1000::NIC is {}\n",
                         if crate::e1000::NIC.lock().is_some() { "SOME" } else { "NONE" }));
-                    // Read back TX registers to verify init
-                    let tctl   = unsafe { (regs.add(0x400) as *const u32).read_volatile() };
-                    let tdbal  = unsafe { (regs.add(0x3800) as *const u32).read_volatile() };
-                    let tdlen  = unsafe { (regs.add(0x3808) as *const u32).read_volatile() };
-                    let tdh    = unsafe { (regs.add(0x3810) as *const u32).read_volatile() };
-                    let tdt    = unsafe { (regs.add(0x3818) as *const u32).read_volatile() };
-                    self.print(&alloc::format!("TCTL:{:08X} TDBAL:{:08X} TDLEN:{:04X} TDH:{} TDT:{}\n",
+                    // TX registers
+                    let tctl  = unsafe { (regs.add(0x400) as *const u32).read_volatile() };
+                    let tdbal = unsafe { (regs.add(0x3800) as *const u32).read_volatile() };
+                    let tdlen = unsafe { (regs.add(0x3808) as *const u32).read_volatile() };
+                    let tdh   = unsafe { (regs.add(0x3810) as *const u32).read_volatile() };
+                    let tdt   = unsafe { (regs.add(0x3818) as *const u32).read_volatile() };
+                    self.print(&alloc::format!("TX: TCTL:{:08X} TDBAL:{:08X} TDLEN:{} TDH:{} TDT:{}\n",
                         tctl, tdbal, tdlen, tdh, tdt));
+                    // RX registers
+                    let rctl  = unsafe { (regs.add(0x100) as *const u32).read_volatile() };
+                    let rdbal = unsafe { (regs.add(0x2800) as *const u32).read_volatile() };
+                    let rdlen = unsafe { (regs.add(0x2808) as *const u32).read_volatile() };
+                    let rdh   = unsafe { (regs.add(0x2810) as *const u32).read_volatile() };
+                    let rdt   = unsafe { (regs.add(0x2818) as *const u32).read_volatile() };
+                    self.print(&alloc::format!("RX: RCTL:{:08X} RDBAL:{:08X} RDLEN:{} RDH:{} RDT:{}\n",
+                        rctl, rdbal, rdlen, rdh, rdt));
                 } else {
                     self.print_colored("BAR phys = 0, device not initialized by BIOS\n", ERR);
                 }
@@ -516,9 +524,8 @@ impl Terminal {
             }
 
             "ifconfig" => {
-                let has_nic = crate::e1000::NIC.lock().is_some();
-                let mac = crate::e1000::NIC.lock()
-                    .as_ref().map(|n| n.mac).unwrap_or([0;6]);
+                let has_nic = crate::rtl8139::NIC.lock().is_some() || crate::e1000::NIC.lock().is_some();
+                let mac = crate::net::my_mac_pub();
                 if !has_nic {
                     self.print_colored("eth0: NIC not initialized\n", ERR);
                     self.print_colored("      (check serial for e1000 init messages)\n", DIM);

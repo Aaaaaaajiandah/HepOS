@@ -51,6 +51,7 @@ const TX_IFCS: u8 = 1 << 1; // insert FCS/CRC
 const TX_RS:   u8 = 1 << 3; // report status
 
 const TXDCTL: usize = 0x3828;
+const RXDCTL: usize = 0x2828;
 
 const RING: usize = 8; // TX/RX ring size
 
@@ -123,14 +124,19 @@ impl E1000 {
 
     pub fn send(&mut self, data: &[u8]) {
         if data.len() > 4096 { return; }
-        // Allocate a DMA page for this TX packet
-        let (phys, virt) = dma_page();
-        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), virt, data.len()); }
+        // Use data's physical address directly — heap is HHDM so phys = virt - hhdm
+        let data_phys = data.as_ptr() as u64 - crate::vmm::hhdm_offset();
+        crate::serial::print_hex("TX phys", data_phys);
+        crate::serial::print_hex("TX len", data.len() as u64);
+        if data.len() >= 12 {
+            crate::serial::print_hex("dst0-3", u32::from_be_bytes([data[0],data[1],data[2],data[3]]) as u64);
+            crate::serial::print_hex("src0-3", u32::from_be_bytes([data[6],data[7],data[8],data[9]]) as u64);
+        }
 
         let idx = self.tx_tail % RING;
         unsafe {
             (*self.tx_desc.add(idx)) = TxDesc {
-                addr:   phys,
+                addr:   data_phys,
                 len:    data.len() as u16,
                 cmd:    TX_EOP | TX_IFCS | TX_RS,
                 status: 0,
@@ -146,10 +152,16 @@ impl E1000 {
     }
 
     pub fn recv(&mut self) -> Option<alloc::vec::Vec<u8>> {
-        let idx = self.rx_tail % RING;
+        // Scan all descriptors starting from rx_tail (hardware may skip ahead)
         fence(Ordering::SeqCst);
-        let st = unsafe { (*self.rx_desc.add(idx)).status };
-        if st & RX_DD == 0 { return None; }
+        let mut found_idx = None;
+        for i in 0..RING {
+            let idx = (self.rx_tail + i) % RING;
+            let st = unsafe { (*self.rx_desc.add(idx)).status };
+            if st & RX_DD != 0 { found_idx = Some(idx); break; }
+        }
+        let idx = match found_idx { Some(i) => i, None => return None };
+        self.rx_tail = idx;
 
         let len = unsafe { (*self.rx_desc.add(idx)).len } as usize;
         if len < 14 {
@@ -377,6 +389,7 @@ pub fn init(devices: &[crate::pci::PciDevice]) {
             (regs.add(RDT) as *mut u32).write_volatile((RING - 1) as u32);
             (regs.add(RCTL) as *mut u32).write_volatile(
                 RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_SECRC);
+            (regs.add(RXDCTL) as *mut u32).write_volatile((1 << 8) | (1 << 16) | (1 << 24));
         }
 
         // ── TX setup ─────────────────────────────────────────────────────────
