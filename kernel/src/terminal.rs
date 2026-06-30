@@ -420,6 +420,47 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
+            "ifconfig" => {
+                let has_nic = crate::e1000::NIC.lock().is_some();
+                if !has_nic { self.print_colored("eth0: no NIC detected\n", ERR); }
+                let mac = crate::e1000::NIC.lock()
+                    .as_ref().map(|n| n.mac).unwrap_or([0;6]);
+                let ip = crate::net::MY_IP;
+                let gw = crate::net::GW_IP;
+                self.print_colored("eth0\n", OK);
+                self.print_colored("  MAC: ", DIM);
+                self.print(&alloc::format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\n",
+                    mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]));
+                self.print_colored("  IP:  ", DIM);
+                self.print(&alloc::format!("{}.{}.{}.{}\n", ip[0],ip[1],ip[2],ip[3]));
+                self.print_colored("  GW:  ", DIM);
+                self.print(&alloc::format!("{}.{}.{}.{}\n", gw[0],gw[1],gw[2],gw[3]));
+                self.print_colored("  Net: ", DIM);
+                self.print("255.255.255.0\n");
+            }
+
+            "ping" => {
+                if arg1.is_empty() {
+                    self.print_colored("usage: ping <ip>\n", ERR);
+                } else {
+                    let parts: alloc::vec::Vec<&str> = arg1.split('.').collect();
+                    if parts.len() == 4 {
+                        let ip: [u8; 4] = [
+                            parts[0].parse().unwrap_or(0),
+                            parts[1].parse().unwrap_or(0),
+                            parts[2].parse().unwrap_or(0),
+                            parts[3].parse().unwrap_or(0),
+                        ];
+                        self.print_colored(&alloc::format!("PING {}\n", arg1), DIM);
+                        let result = crate::net::ping(ip);
+                        self.print(&result);
+                        self.print("\n");
+                    } else {
+                        self.print_colored("ping: invalid IP address\n", ERR);
+                    }
+                }
+            }
+
             "edit" => {
                 if arg1.is_empty() {
                     self.print_colored("usage: edit <file>\n", ERR);

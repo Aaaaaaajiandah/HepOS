@@ -100,3 +100,25 @@ pub fn free_page(addr: u64) {
 
 pub fn free_pages()  -> u64 { FREE_PAGES .load(Ordering::Relaxed) }
 pub fn total_pages() -> u64 { TOTAL_PAGES.load(Ordering::Relaxed) }
+
+/// Allocate `count` physically contiguous pages. Returns base physical address.
+pub fn alloc_contiguous(count: usize) -> Option<u64> {
+    'outer: for i in 0..MAX_PAGES {
+        // Check if pages i..i+count are all free
+        for j in 0..count {
+            if i + j >= MAX_PAGES { break 'outer; }
+            let page = i + j;
+            if BITMAP[page / 64].load(Ordering::Relaxed) & (1 << (page % 64)) != 0 {
+                continue 'outer; // page i+j is used, try next
+            }
+        }
+        // Found: claim all pages
+        for j in 0..count {
+            let page = i + j;
+            BITMAP[page / 64].fetch_or(1 << (page % 64), Ordering::Relaxed);
+        }
+        FREE_PAGES.fetch_sub(count as u64, Ordering::Relaxed);
+        return Some(i as u64 * PAGE_SIZE as u64);
+    }
+    None
+}

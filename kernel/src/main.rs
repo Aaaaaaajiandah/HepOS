@@ -6,7 +6,10 @@ extern crate alloc;
 mod acpi;
 mod apic;
 mod editor;
+mod e1000;
+mod net;
 mod rtc;
+mod virtio_net;
 mod desktop;
 mod framebuffer;
 mod gdt;
@@ -259,6 +262,12 @@ extern "C" fn kmain() -> ! {
 
     // Re-enable interrupts now that NVMe + FS are stable
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+
+    // Networking (e1000 + virtio-net both tried)
+    e1000::init(&pci_devices);
+    virtio_net::init(&pci_devices);
+    net::arp_announce();
+    serial::print("Network init\n");
 
     // Input devices
     ps2::init();

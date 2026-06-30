@@ -67,6 +67,8 @@ $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
     -boot d `
     -drive file=$disk,if=none,id=nvme0,format=raw `
     -device nvme,serial=heposv1,drive=nvme0 `
+    -netdev user,id=net0 `
+    -device e1000,netdev=net0 `
     -vga std `
     -display sdl,window-close=off `
     -serial stdio `
