@@ -207,11 +207,13 @@ pub fn init() {
     wait_read();  inb(DATA_PORT);
 }
 
-/// Poll the PS/2 data port. Only processes keyboard bytes (bit 5 = 0).
-/// Mouse bytes (bit 5 = 1) are left for mouse::poll() to consume.
+/// Drain ALL pending keyboard bytes (bit 5 = 0 in status).
+/// Stops as soon as a mouse byte appears, leaving it for mouse::poll().
 pub fn poll() {
-    let s = inb(STATUS_PORT);
-    if s & 0x01 != 0 && s & 0x20 == 0 {
+    loop {
+        let s = inb(STATUS_PORT);
+        if s & 0x01 == 0 { break; } // nothing in buffer
+        if s & 0x20 != 0 { break; } // next byte is mouse data — stop, don't consume
         handle_scancode(inb(DATA_PORT));
     }
 }

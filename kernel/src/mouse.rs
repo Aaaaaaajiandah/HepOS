@@ -55,14 +55,14 @@ fn handle_ps2_byte(b: u8) {
     }
 }
 
+/// Drain ALL pending mouse bytes (bit 5 = 1 in status).
+/// Stops as soon as a keyboard byte appears, leaving it for ps2::poll().
 pub fn poll() {
     loop {
         let s = inb(PS2_STATUS);
-        if s & 0x01 == 0 { break; }
-        let b = inb(PS2_DATA);
-        if s & 0x20 != 0 {
-            handle_ps2_byte(b);
-        }
+        if s & 0x01 == 0 { break; } // nothing in buffer
+        if s & 0x20 == 0 { break; } // next byte is keyboard data — stop, don't consume
+        handle_ps2_byte(inb(PS2_DATA));
     }
 }
 

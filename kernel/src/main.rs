@@ -299,7 +299,17 @@ fn task_blink() -> ! {
 
             match c {
                 '\x1b' if focused != Some(3) => {
-                    // ESC → unfocus (unless editor has focus; editor handles its own ESC)
+                    // ESC → cursor mode (yellow crosshair, WASD to move)
+                    // Minimize editor window so it doesn't block clicks
+                    {
+                        let mut dt = desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_mut() {
+                            if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
+                                w.minimized = true;
+                            }
+                            dt.dirty = true;
+                        }
+                    }
                     *FOCUSED_WIN.lock() = None;
                 }
                 _ if focused == Some(3) => {
@@ -331,21 +341,32 @@ fn task_blink() -> ! {
                 'a' => mx -= 6,
                 'd' => mx += 6,
                 ' ' => {
-                    // Click: focus the window under the cursor
+                    // Space = click: focus the topmost window under cursor
+                    // Also check title bar area
                     let clicked_id = {
                         let dt = desktop::DESKTOP.lock();
                         dt.as_ref().and_then(|d| {
                             d.windows.iter().rev()
-                                .find(|w| !w.minimized && w.content_hit(mx, my))
+                                .find(|w| !w.minimized &&
+                                    (w.content_hit(mx, my) || w.title_hit(mx, my)))
                                 .map(|w| w.id)
                         })
                     };
                     if let Some(id) = clicked_id {
                         *FOCUSED_WIN.lock() = Some(id);
-                        let mut dt = desktop::DESKTOP.lock();
-                        if let Some(dt) = dt.as_mut() {
-                            dt.dirty = true;
+                        // Also un-minimize editor if clicking on it
+                        if id == 3 {
+                            let mut eg = editor::EDITOR.lock();
+                            if let Some(ed) = eg.as_mut() {
+                                if !ed.open { drop(eg); *FOCUSED_WIN.lock() = Some(2); }
+                            }
                         }
+                        let mut dt = desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+                    }
+                    // If nothing clicked, focus terminal as default
+                    if FOCUSED_WIN.lock().is_none() {
+                        *FOCUSED_WIN.lock() = Some(2);
                     }
                 }
                 _ => {}
@@ -524,7 +545,7 @@ fn render_welcome_window(display: &mut framebuffer::Display) {
         if has_nvme { ok } else { dim }, 1); y += 14;
 
     display.draw_text(wx + 4, y, "HepFS: OK", ok, 1); y += 14;
-    display.draw_text(wx + 4, y, "ESC=cursor WASD=move", dim, 1);
+    display.draw_text(wx + 4, y, "ESC=cursor/terminal toggle", dim, 1);
     let _ = ww; let _ = wh;
 }
 

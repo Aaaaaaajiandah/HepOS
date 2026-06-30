@@ -144,8 +144,8 @@ impl Terminal {
                 self.col = 0; self.row = 0;
                 self.show_prompt();
             }
-            ps2::KEY_UP => { // history previous
-                if self.history.is_empty() { return; }
+            ps2::KEY_UP | 0x10 => { // UP arrow or Ctrl+P — history previous
+                if self.history.is_empty() { self.dirty = true; return; }
                 let new_idx = match self.history_idx {
                     None    => self.history.len() - 1,
                     Some(0) => 0,
@@ -155,7 +155,7 @@ impl Terminal {
                 let entry = self.history[new_idx].clone();
                 self.replace_input(&entry);
             }
-            ps2::KEY_DOWN => { // history next
+            ps2::KEY_DOWN | 0x0E => { // DOWN arrow or Ctrl+N — history next
                 let action = match self.history_idx {
                     None => None,
                     Some(i) if i + 1 >= self.history.len() => Some(None),
