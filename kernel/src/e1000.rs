@@ -101,6 +101,16 @@ pub struct E1000 {
 unsafe impl Send for E1000 {}
 
 impl E1000 {
+    /// Read status byte of RX descriptor i directly.
+    pub fn rx_status(&self, i: usize) -> u8 {
+        unsafe { (self.rx_desc as *const u8).add(i * 16 + 12).read_volatile() }
+    }
+    /// Read len of RX descriptor i.
+    pub fn rx_len(&self, i: usize) -> u16 {
+        unsafe { (self.rx_desc as *const u8).add(i * 16 + 8).read_unaligned() as u16
+            | ((self.rx_desc as *const u8).add(i * 16 + 9).read_volatile() as u16) << 8 }
+    }
+
     fn read32(&self, off: usize) -> u32 {
         unsafe { (self.regs.add(off) as *const u32).read_volatile() }
     }

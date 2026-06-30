@@ -420,6 +420,24 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
+            "netpoll" => {
+                // Directly scan all 8 RX descriptors and show status
+                self.print_colored("Scanning RX descriptors...\n", DIM);
+                {
+                    let nic_guard = crate::e1000::NIC.lock();
+                    if let Some(nic) = nic_guard.as_ref() {
+                        for i in 0..8usize {
+                            let st  = nic.rx_status(i);
+                            let len = nic.rx_len(i);
+                            self.print(&alloc::format!("  desc[{}]: status={:02X} len={}\n",
+                                i, st, len));
+                        }
+                    } else {
+                        self.print_colored("NIC is None - run netstart first\n", ERR);
+                    }
+                }
+            }
+
             "netstart" => {
                 // Force-initialize e1000 from terminal (bar at 0xFEBC0000 from lspci)
                 self.print_colored("Starting e1000...\n", DIM);
