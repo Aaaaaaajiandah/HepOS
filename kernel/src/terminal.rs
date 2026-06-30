@@ -490,6 +490,14 @@ impl Terminal {
                         mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]));
                     self.print(&alloc::format!("e1000::NIC is {}\n",
                         if crate::e1000::NIC.lock().is_some() { "SOME" } else { "NONE" }));
+                    // Read back TX registers to verify init
+                    let tctl   = unsafe { (regs.add(0x400) as *const u32).read_volatile() };
+                    let tdbal  = unsafe { (regs.add(0x3800) as *const u32).read_volatile() };
+                    let tdlen  = unsafe { (regs.add(0x3808) as *const u32).read_volatile() };
+                    let tdh    = unsafe { (regs.add(0x3810) as *const u32).read_volatile() };
+                    let tdt    = unsafe { (regs.add(0x3818) as *const u32).read_volatile() };
+                    self.print(&alloc::format!("TCTL:{:08X} TDBAL:{:08X} TDLEN:{:04X} TDH:{} TDT:{}\n",
+                        tctl, tdbal, tdlen, tdh, tdt));
                 } else {
                     self.print_colored("BAR phys = 0, device not initialized by BIOS\n", ERR);
                 }

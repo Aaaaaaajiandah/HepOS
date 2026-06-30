@@ -69,6 +69,7 @@ $qemu = "C:\Program Files\qemu\qemu-system-x86_64.exe"
     -device nvme,serial=heposv1,drive=nvme0 `
     -netdev user,id=net0 `
     -device e1000,netdev=net0 `
+    -object filter-dump,id=f1,netdev=net0,file="$root\hepos_net.pcap" `
     -vga std `
     -display sdl,window-close=off `
     -serial stdio `

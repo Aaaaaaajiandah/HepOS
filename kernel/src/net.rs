@@ -197,11 +197,11 @@ pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
     let mut dst_mac = [0u8; 6];
     let mut got_mac = false;
     let mut rx_count = 0u32;
-    for _ in 0..5_000_000u32 {
+    // Paced poll: check recv, then pause to let QEMU's event loop run
+    for _ in 0..500u32 {
         let frame = { NIC.lock().as_mut().and_then(|n| n.recv()) };
         if let Some(f) = frame {
             rx_count += 1;
-            if rx_count <= 3 { crate::serial::print_hex("ping: got frame len", f.len() as u64); }
             if f.len() >= 14 {
                 let etype = u16::from_be_bytes([f[12], f[13]]);
                 if etype == 0x0806 && f.len() >= 42 {
@@ -216,6 +216,8 @@ pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
                 handle_frame(&f);
             }
         }
+        // Brief pause to yield to QEMU's event loop (~0.5ms each)
+        for _ in 0..40_000u32 { core::hint::spin_loop(); }
     }
     crate::serial::print_hex("ping: rx_count during ARP poll", rx_count as u64);
     if !got_mac {
@@ -228,10 +230,11 @@ pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
     let seq = ping_send(target_ip, dst_mac);
     let start = crate::rtc::now();
 
-    // Step 3: poll for reply (up to 2s equivalent)
-    for _ in 0..20_000_000u32 {
+    // Step 3: poll for ICMP reply (~250ms total)
+    for _ in 0..500u32 {
         let frame = { NIC.lock().as_mut().and_then(|n| n.recv()) };
         if let Some(f) = frame { handle_frame(&f); }
+        for _ in 0..40_000u32 { core::hint::spin_loop(); }
         if let Some(got_seq) = *PING_REPLY.lock() {
             if got_seq == seq {
                 let end = crate::rtc::now();

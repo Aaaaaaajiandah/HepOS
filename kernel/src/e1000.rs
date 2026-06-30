@@ -45,9 +45,12 @@ const TCTL_PSP:  u32 = 1 << 3; // pad short packets
 
 // Descriptor status bits
 const RX_DD: u8 = 1 << 0; // descriptor done
-const TX_DD: u8 = 1 << 0;
-const TX_RS: u8 = 1 << 3; // report status
-const TX_EOP:u8 = 1 << 0; // end of packet (cmd)
+const TX_DD:   u8 = 1 << 0;
+const TX_EOP:  u8 = 1 << 0; // end of packet (cmd)
+const TX_IFCS: u8 = 1 << 1; // insert FCS/CRC
+const TX_RS:   u8 = 1 << 3; // report status
+
+const TXDCTL: usize = 0x3828;
 
 const RING: usize = 8; // TX/RX ring size
 
@@ -129,7 +132,7 @@ impl E1000 {
             (*self.tx_desc.add(idx)) = TxDesc {
                 addr:   phys,
                 len:    data.len() as u16,
-                cmd:    TX_EOP | TX_RS,
+                cmd:    TX_EOP | TX_IFCS | TX_RS,
                 status: 0,
                 ..Default::default()
             };
@@ -138,13 +141,8 @@ impl E1000 {
         self.tx_tail = (self.tx_tail + 1) % RING;
         self.write32(TDT, self.tx_tail as u32);
 
-        // Wait for TX completion
-        for _ in 0..2_000_000u32 {
-            fence(Ordering::SeqCst);
-            let st = unsafe { (*self.tx_desc.add(idx)).status };
-            if st & TX_DD != 0 { break; }
-            core::hint::spin_loop();
-        }
+        // Brief yield so QEMU can process the doorbell write (~0.5ms)
+        for _ in 0..40_000u32 { core::hint::spin_loop(); }
     }
 
     pub fn recv(&mut self) -> Option<alloc::vec::Vec<u8>> {
@@ -193,8 +191,9 @@ pub fn force_init(bar_phys: u64) {
                (rah&0xFF)as u8,(rah>>8&0xFF)as u8];
     serial::print("force_init: MAC read\n");
 
-    // Link up (don't reset, keep existing state)
-    unsafe { (regs.add(CTRL) as *mut u32).write_volatile(CTRL_ASDE | CTRL_SLU); }
+    // Link up — preserve existing bits, just ensure ASDE and SLU are set
+    let ctrl = unsafe { (regs.add(CTRL) as *const u32).read_volatile() };
+    unsafe { (regs.add(CTRL) as *mut u32).write_volatile(ctrl | CTRL_ASDE | CTRL_SLU); }
     serial::print("force_init: link up\n");
 
     // Clear MTA
@@ -239,7 +238,8 @@ pub fn force_init(bar_phys: u64) {
         (regs.add(TDH) as *mut u32).write_volatile(0);
         (regs.add(TDT) as *mut u32).write_volatile(0);
         (regs.add(TIPG) as *mut u32).write_volatile(0x0060200A);
-        (regs.add(TCTL) as *mut u32).write_volatile(TCTL_EN|TCTL_PSP|(15<<4)|(63<<12));
+        (regs.add(TCTL) as *mut u32).write_volatile(TCTL_EN | TCTL_PSP | (16 << 4) | (64 << 12));
+            (regs.add(TXDCTL) as *mut u32).write_volatile((1 << 8) | (1 << 16) | (1 << 24));
     }
     serial::print("force_init: TX enabled\n");
 
@@ -331,11 +331,9 @@ pub fn init(devices: &[crate::pci::PciDevice]) {
             serial::print("e1000: reset did not clear, continuing anyway\n");
         }
 
-        // Link up
-        unsafe {
-            (regs.add(CTRL) as *mut u32)
-                .write_volatile(CTRL_ASDE | CTRL_SLU);
-        }
+        // Link up — preserve existing bits
+        let ctrl_cur = unsafe { (regs.add(CTRL) as *const u32).read_volatile() };
+        unsafe { (regs.add(CTRL) as *mut u32).write_volatile(ctrl_cur | CTRL_ASDE | CTRL_SLU); }
 
         // Read MAC from RAL/RAH
         let ral = unsafe { (regs.add(RAL) as *const u32).read_volatile() };
