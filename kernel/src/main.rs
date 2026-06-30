@@ -441,17 +441,19 @@ fn task_blink() -> ! {
                     }
                 }
 
-                // 5. Cursor mode indicator — yellow crosshair when unfocused
+                // 5. Cursor — always drawn last so it's on top of all windows.
+                //    Yellow crosshair in cursor mode (no focus), white cross when focused.
                 {
+                    let cx = mx as usize;
+                    let cy = my as usize;
                     let focused = *FOCUSED_WIN.lock();
-                    if focused.is_none() {
-                        let cx = mx as usize;
-                        let cy = my as usize;
-                        // Yellow crosshair = cursor mode
-                        let col = framebuffer::Color::from_hex(0xFFFF00);
-                        display.fill_rect(cx.saturating_sub(8), cy, 17, 1, col);
-                        display.fill_rect(cx, cy.saturating_sub(8), 1, 17, col);
-                    }
+                    let col = if focused.is_none() {
+                        framebuffer::Color::from_hex(0xFFFF00) // yellow = cursor mode
+                    } else {
+                        framebuffer::Color::from_hex(0xFFFFFF) // white = window focused
+                    };
+                    display.fill_rect(cx.saturating_sub(6), cy, 13, 1, col);
+                    display.fill_rect(cx, cy.saturating_sub(6), 1, 13, col);
                 }
             }
         }

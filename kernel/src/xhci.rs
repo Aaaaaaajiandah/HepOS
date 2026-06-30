@@ -192,10 +192,11 @@ impl Xhci {
         ]);
         self.hid_i += 1;
         if self.hid_i >= RING_N - 1 {
-            let tc = if self.hid_c == 1 { 1u32 << 1 } else { 0 };
+            // TC=1 (Toggle Cycle) ALWAYS so the XHC toggles PCS on every wrap.
+            // cycle bit = c (current cycle, so XHC processes this link TRB now).
             trb_w(self.hid_v, self.hid_i, [
                 self.hid_p as u32, (self.hid_p >> 32) as u32,
-                0, TRB_LINK << 10 | tc | c,
+                0, TRB_LINK << 10 | (1 << 1) | c,
             ]);
             self.hid_i = 0;
             self.hid_c ^= 1;
@@ -213,9 +214,11 @@ impl Xhci {
                     let buttons = buf[0] & 0x07;
                     let abs_x   = u16::from_le_bytes([buf[1], buf[2]]) as u32;
                     let abs_y   = u16::from_le_bytes([buf[3], buf[4]]) as u32;
-                    let sx = (abs_x.saturating_mul(fb_w)) / 32768;
-                    let sy = (abs_y.saturating_mul(fb_h)) / 32768;
-                    {
+                    // Ignore (0,0) with no buttons — tablet sends this as initial report
+                    // before the host cursor enters the QEMU window.
+                    if abs_x != 0 || abs_y != 0 || buttons != 0 {
+                        let sx = (abs_x.saturating_mul(fb_w)) / 32768;
+                        let sy = (abs_y.saturating_mul(fb_h)) / 32768;
                         let mut m = crate::mouse::MOUSE.lock();
                         m.x = sx as i32;
                         m.y = sy as i32;

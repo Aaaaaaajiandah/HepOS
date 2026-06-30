@@ -194,12 +194,7 @@ impl Desktop {
 
         // Taskbar
         self.draw_taskbar(display);
-
-        // Cursor (4×4 cross)
-        let cx = cursor_x as usize;
-        let cy = cursor_y as usize;
-        display.fill_rect(cx.saturating_sub(4), cy, 9, 1, pal::CURSOR);
-        display.fill_rect(cx, cy.saturating_sub(4), 1, 9, pal::CURSOR);
+        // Cursor is drawn by the render loop AFTER window content so it's always on top.
     }
 
     fn draw_window(&self, display: &mut Display, win: &Window, focused: bool) {
