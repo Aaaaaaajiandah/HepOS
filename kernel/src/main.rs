@@ -399,50 +399,73 @@ fn task_blink() -> ! {
 
         if desktop_dirty || term_dirty || ps2_had_input {
             if let Some(display) = DISPLAY.lock().as_mut() {
-                // 1. Render desktop
+                // 1. Background clear
+                {
+                    let dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_ref() { dt.render(display, mx, my); }
+                }
                 {
                     let mut dt = desktop::DESKTOP.lock();
-                    if let Some(dt) = dt.as_mut() {
-                        dt.dirty = false;
-                        dt.render(display, mx, my);
-                    }
+                    if let Some(dt) = dt.as_mut() { dt.dirty = false; }
                 }
 
-                // 2-5. Render all window content IN Z-ORDER so topmost window always wins
-                let win_order: alloc::vec::Vec<(usize, i32, i32, usize, usize)> = {
+                // 2. Windows in z-order: chrome then content for each window so
+                //    a lower window's content never paints over a higher window's chrome.
+                let win_order: alloc::vec::Vec<(usize, bool, i32, i32, usize, usize)> = {
                     let dt = desktop::DESKTOP.lock();
                     dt.as_ref().map(|d| d.windows.iter()
                         .filter(|w| !w.minimized)
-                        .map(|w| (w.id, w.x, w.y, w.w, w.h))
+                        .map(|w| (w.id, d.focused == Some(w.id), w.x, w.y, w.w, w.h))
                         .collect()
                     ).unwrap_or_default()
                 };
 
-                for (id, wx, wy, ww, wh) in win_order {
-                    let wx = wx.max(0) as usize;
-                    let wy = wy.max(0) as usize;
+                for (id, focused, wx, wy, ww, wh) in &win_order {
+                    // Chrome (border + title bar + content-area background)
+                    {
+                        let dt = desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_ref() {
+                            if let Some(win) = dt.windows.iter().find(|w| w.id == *id) {
+                                dt.draw_window(display, win, *focused);
+                            }
+                        }
+                    }
+                    // Content
+                    let wx = (*wx).max(0) as usize;
+                    let wy = (*wy).max(0) as usize;
                     match id {
                         0 => render_welcome_window(display),
                         1 => render_hepfs_window(display),
                         2 => {
                             let mut tg = terminal::TERMINAL.lock();
                             if let Some(t) = tg.as_mut() {
-                                t.render(display, wx, wy, ww, wh);
+                                t.render(display, wx, wy, *ww, *wh);
                                 t.dirty = false;
                             }
                         }
                         3 => {
                             let mut eg = editor::EDITOR.lock();
                             if let Some(ed) = eg.as_mut() {
-                                ed.render(display, wx, wy, ww, wh);
+                                ed.render(display, wx, wy, *ww, *wh);
                             }
                         }
                         _ => {}
                     }
                 }
 
-                // 5. Cursor — always drawn last so it's on top of all windows.
-                //    Yellow crosshair in cursor mode (no focus), white cross when focused.
+                // 3. Start menu overlay (above windows, below taskbar)
+                {
+                    let dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_ref() { dt.draw_start_menu(display); }
+                }
+
+                // 4. Taskbar — drawn after all windows so it always sits on top
+                {
+                    let dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_ref() { dt.draw_taskbar(display); }
+                }
+
+                // 5. Cursor — always last so it's above everything
                 {
                     let cx = mx as usize;
                     let cy = my as usize;
