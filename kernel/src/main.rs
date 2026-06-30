@@ -261,6 +261,7 @@ fn task_blink() -> ! {
     let mut mx: i32 = 400;
     let mut my: i32 = 300;
     let mut btn: u8  = 0;
+    let mut prev_btn: u8 = 0; // for click detection outside update_mouse
 
     loop {
         ps2::poll();
@@ -378,10 +379,59 @@ fn task_blink() -> ! {
         }
 
         // Update WM (update_mouse sets dirty flag if position changed)
+        let fresh_click = btn & 1 != 0 && prev_btn & 1 == 0;
+        prev_btn = btn;
         {
             let mut dt_guard = desktop::DESKTOP.lock();
             if let Some(dt) = dt_guard.as_mut() {
                 dt.update_mouse(mx, my, btn);
+            }
+        }
+
+        // HepFS window: click on a file entry to open it in the editor
+        if fresh_click {
+            let target = {
+                let dt = desktop::DESKTOP.lock();
+                dt.as_ref().and_then(|d| {
+                    let win = d.windows.iter().find(|w| w.id == 1 && !w.minimized)?;
+                    // Content area starts at (win.x, win.y); header takes 22px
+                    if mx < win.x || mx >= win.x + win.w as i32 { return None; }
+                    if my < win.y + 22 || my >= win.y + win.h as i32 { return None; }
+                    let entry_idx = (my - win.y - 22) as usize / 14;
+                    Some(entry_idx)
+                })
+            };
+            if let Some(idx) = target {
+                // Resolve entry → open in editor if it's a file
+                let file_info = {
+                    let mut ctrl = nvme::CONTROLLER.lock();
+                    ctrl.as_mut().map(|ctrl| {
+                        let entries = hepfs::list_dir(ctrl, hepfs::ROOT_INO);
+                        if let Some((ino, name)) = entries.get(idx) {
+                            let inode = hepfs::read_inode(ctrl, *ino);
+                            (name.clone(), inode.flags != hepfs::F_DIR)
+                        } else {
+                            (alloc::string::String::new(), false)
+                        }
+                    })
+                };
+                if let Some((name, is_file)) = file_info {
+                    if is_file && !name.is_empty() {
+                        let path = alloc::format!("/{}", name);
+                        editor::open(&path);
+                        {
+                            let mut dt = desktop::DESKTOP.lock();
+                            if let Some(dt) = dt.as_mut() {
+                                if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
+                                    w.minimized = false;
+                                }
+                                dt.bring_to_front(3);
+                                dt.dirty = true;
+                            }
+                        }
+                        *FOCUSED_WIN.lock() = Some(3);
+                    }
+                }
             }
         }
 

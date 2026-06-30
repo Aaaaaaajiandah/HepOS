@@ -72,6 +72,8 @@ pub const KEY_RIGHT: u8 = 0x83;
 pub const KEY_DEL:   u8 = 0x84;
 pub const KEY_HOME:  u8 = 0x85;
 pub const KEY_END:   u8 = 0x86;
+pub const KEY_PGUP:  u8 = 0x87;
+pub const KEY_PGDN:  u8 = 0x88;
 pub const KEY_F1:    u8 = 0x91;
 pub const KEY_F2:    u8 = 0x92; // save in editor
 pub const KEY_F5:    u8 = 0x95;
@@ -125,6 +127,8 @@ pub fn handle_scancode(sc: u8) {
             0x53 => KEY_DEL,
             0x47 => KEY_HOME,
             0x4F => KEY_END,
+            0x49 => KEY_PGUP,
+            0x51 => KEY_PGDN,
             _ => 0,
         }
     } else {

@@ -27,10 +27,11 @@ pub struct Editor {
     cursor_row:  usize,
     cursor_col:  usize,
     scroll_row:  usize,
-    pub modified: bool,
-    pub status_msg: String,
-    status_ok:   bool,
-    pub open:    bool,
+    pub modified:        bool,
+    pub status_msg:      String,
+    status_ok:           bool,
+    pub open:            bool,
+    pub visible_rows_hint: usize, // updated by render() so PgUp/PgDn knows page size
 }
 
 impl Editor {
@@ -47,9 +48,10 @@ impl Editor {
             cursor_row: 0, cursor_col: 0,
             scroll_row: 0,
             modified: false,
-            status_msg: String::from("F2=save  F10=close  Ctrl+S/Q also work"),
+            status_msg: String::from("F2/Ctrl+S=save  F10=close  PgUp/Dn=page  Ctrl+Home/End"),
             status_ok: true,
             open: true,
+            visible_rows_hint: 20,
         }
     }
 
@@ -106,8 +108,36 @@ impl Editor {
                     self.ensure_visible();
                 }
             }
-            b if b == ps2::KEY_HOME => { self.cursor_col = 0; }
-            b if b == ps2::KEY_END  => { self.cursor_col = self.lines[self.cursor_row].len(); }
+            b if b == ps2::KEY_HOME => {
+                if crate::ps2::ctrl_held() {
+                    // Ctrl+Home → file start
+                    self.cursor_row = 0; self.cursor_col = 0; self.scroll_row = 0;
+                } else {
+                    self.cursor_col = 0;
+                }
+            }
+            b if b == ps2::KEY_END => {
+                if crate::ps2::ctrl_held() {
+                    // Ctrl+End → file end
+                    self.cursor_row = self.lines.len().saturating_sub(1);
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                    self.ensure_visible();
+                } else {
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                }
+            }
+            b if b == ps2::KEY_PGUP => {
+                let page = self.visible_rows_hint.max(1);
+                self.cursor_row = self.cursor_row.saturating_sub(page);
+                self.clamp_col();
+                self.ensure_visible();
+            }
+            b if b == ps2::KEY_PGDN => {
+                let page = self.visible_rows_hint.max(1);
+                self.cursor_row = (self.cursor_row + page).min(self.lines.len().saturating_sub(1));
+                self.clamp_col();
+                self.ensure_visible();
+            }
 
             // Enter → split line
             b'\n' => {
@@ -233,6 +263,7 @@ impl Editor {
         let text_w = ww.saturating_sub(line_no_w);
 
         let visible_rows = content_h / CHAR_H;
+        self.visible_rows_hint = visible_rows.max(1);
 
         // Adjust scroll so cursor is visible
         if self.cursor_row >= self.scroll_row + visible_rows {

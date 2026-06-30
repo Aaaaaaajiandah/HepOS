@@ -224,6 +224,8 @@ impl Terminal {
                     ("mkdir <name>",   "create directory"),
                     ("touch <name>",   "create empty file"),
                     ("rm <name>",      "remove file or empty dir"),
+                    ("cp <src> <dst>", "copy file"),
+                    ("mv <src> <dst>", "move/rename file"),
                     ("write <f> <txt>","write text to file"),
                     ("uname",          "system info"),
                     ("mem",            "memory usage"),
@@ -347,6 +349,54 @@ impl Terminal {
                 let ok = self.with_ctrl(|ctrl| crate::hepfs::remove(ctrl, cwd, arg1));
                 if ok { self.print_colored("removed\n", OK); }
                 else  { self.print_colored("rm: failed (not found or dir not empty)\n", ERR); }
+            }
+
+            "cp" => {
+                if arg1.is_empty() || arg2.is_empty() {
+                    self.print_colored("usage: cp <src> <dst>\n", ERR); return;
+                }
+                let src_ino = self.resolve(arg1);
+                match src_ino {
+                    None => { self.print_colored("cp: source not found\n", ERR); }
+                    Some(ino) => {
+                        let bytes = self.with_ctrl(|ctrl| crate::hepfs::read_file(ctrl, ino));
+                        let dst_ino = self.resolve(arg2);
+                        let cwd = self.cwd_ino;
+                        let dst_name = arg2.trim_start_matches('/');
+                        self.with_ctrl(|ctrl| {
+                            let di = dst_ino.unwrap_or_else(|| crate::hepfs::create_file(ctrl, cwd, dst_name));
+                            crate::hepfs::write_file(ctrl, di, &bytes);
+                        });
+                        self.print_colored("copied\n", OK);
+                    }
+                }
+            }
+
+            "mv" => {
+                if arg1.is_empty() || arg2.is_empty() {
+                    self.print_colored("usage: mv <src> <dst>\n", ERR); return;
+                }
+                let src_ino = self.resolve(arg1);
+                match src_ino {
+                    None => { self.print_colored("mv: source not found\n", ERR); }
+                    Some(ino) => {
+                        let bytes = self.with_ctrl(|ctrl| crate::hepfs::read_file(ctrl, ino));
+                        let src_name = arg1.trim_start_matches('/');
+                        let cwd = self.cwd_ino;
+                        let removed = self.with_ctrl(|ctrl| crate::hepfs::remove(ctrl, cwd, src_name));
+                        if removed {
+                            let dst_ino = self.resolve(arg2);
+                            let dst_name = arg2.trim_start_matches('/');
+                            self.with_ctrl(|ctrl| {
+                                let di = dst_ino.unwrap_or_else(|| crate::hepfs::create_file(ctrl, cwd, dst_name));
+                                crate::hepfs::write_file(ctrl, di, &bytes);
+                            });
+                            self.print_colored("moved\n", OK);
+                        } else {
+                            self.print_colored("mv: remove failed\n", ERR);
+                        }
+                    }
+                }
             }
 
             "write" => {
