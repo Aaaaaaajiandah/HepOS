@@ -167,6 +167,80 @@ impl E1000 {
 
 pub static NIC: spin::Mutex<Option<E1000>> = spin::Mutex::new(None);
 
+/// Initialize e1000 with known BAR address, no PCI scan, no reset.
+/// Call this from terminal when auto-init failed.
+pub fn force_init(bar_phys: u64) {
+    use crate::serial;
+    serial::print("e1000::force_init\n");
+
+    let regs = crate::paging::map_mmio(bar_phys, 131072);
+    serial::print("force_init: mapped MMIO\n");
+
+    // Read MAC
+    let ral = unsafe { (regs.add(RAL) as *const u32).read_volatile() };
+    let rah = unsafe { (regs.add(RAH) as *const u32).read_volatile() };
+    let mac = [(ral&0xFF)as u8,(ral>>8&0xFF)as u8,(ral>>16&0xFF)as u8,(ral>>24)as u8,
+               (rah&0xFF)as u8,(rah>>8&0xFF)as u8];
+    serial::print("force_init: MAC read\n");
+
+    // Link up (don't reset, keep existing state)
+    unsafe { (regs.add(CTRL) as *mut u32).write_volatile(CTRL_ASDE | CTRL_SLU); }
+    serial::print("force_init: link up\n");
+
+    // Clear MTA
+    for i in 0..128usize {
+        unsafe { (regs.add(MTA + i*4) as *mut u32).write_volatile(0); }
+    }
+
+    // Disable interrupts
+    unsafe { (regs.add(IMS) as *mut u32).write_volatile(0); }
+    serial::print("force_init: setup before RX\n");
+
+    // RX
+    let (rx_phys, rx_virt) = dma_page();
+    serial::print("force_init: rx_desc allocated\n");
+    let rx_desc = rx_virt as *mut RxDesc;
+    let mut rx_bufs = [0u64; RING];
+    for i in 0..RING {
+        let (bp, _) = dma_page();
+        rx_bufs[i] = bp;
+        unsafe { (*rx_desc.add(i)).addr = bp; }
+    }
+    serial::print("force_init: rx_bufs allocated\n");
+    unsafe {
+        (regs.add(RDBAL) as *mut u32).write_volatile(rx_phys as u32);
+        (regs.add(RDBAH) as *mut u32).write_volatile((rx_phys>>32) as u32);
+        (regs.add(RDLEN) as *mut u32).write_volatile((RING * 16) as u32);
+        (regs.add(RDH) as *mut u32).write_volatile(0);
+        (regs.add(RDT) as *mut u32).write_volatile((RING-1) as u32);
+        (regs.add(RCTL) as *mut u32).write_volatile(RCTL_EN|RCTL_UPE|RCTL_MPE|RCTL_BAM|RCTL_SECRC);
+    }
+    serial::print("force_init: RX enabled\n");
+
+    // TX
+    let (tx_phys, tx_virt) = dma_page();
+    serial::print("force_init: tx_desc allocated\n");
+    let tx_desc = tx_virt as *mut TxDesc;
+    for i in 0..RING { unsafe { (*tx_desc.add(i)).status = TX_DD; } }
+    unsafe {
+        (regs.add(TDBAL) as *mut u32).write_volatile(tx_phys as u32);
+        (regs.add(TDBAH) as *mut u32).write_volatile((tx_phys>>32) as u32);
+        (regs.add(TDLEN) as *mut u32).write_volatile((RING * 16) as u32);
+        (regs.add(TDH) as *mut u32).write_volatile(0);
+        (regs.add(TDT) as *mut u32).write_volatile(0);
+        (regs.add(TIPG) as *mut u32).write_volatile(0x0060200A);
+        (regs.add(TCTL) as *mut u32).write_volatile(TCTL_EN|TCTL_PSP|(15<<4)|(63<<12));
+    }
+    serial::print("force_init: TX enabled\n");
+
+    serial::print("force_init: DONE, setting NIC\n");
+    *NIC.lock() = Some(E1000 {
+        regs, mac, rx_desc, rx_phys, rx_bufs, rx_tail: 0,
+        tx_desc, tx_phys, tx_tail: 0,
+    });
+    serial::print("force_init: NIC set!\n");
+}
+
 pub fn init(devices: &[crate::pci::PciDevice]) {
     use crate::serial;
 
@@ -190,26 +264,61 @@ pub fn init(devices: &[crate::pci::PciDevice]) {
             }
         }
 
-        serial::print("e1000: found\n");
+        serial::print("e1000: found at bus=");
+        serial::print_hex("", d.bus as u64);
+        serial::print(" dev=");
+        serial::print_hex("", d.dev as u64);
 
         // Enable memory space + bus master
         let cmd = crate::pci::config_read16(d.bus, d.dev, d.func, 0x04);
         crate::pci::config_write32(d.bus, d.dev, d.func, 0x04, (cmd | 0x06) as u32);
 
-        // Map BAR0 (128KB MMIO)
-        let bar0 = crate::pci::config_read32(d.bus, d.dev, d.func, 0x10) as u64;
-        let bar_phys = bar0 & !0xF;
-        serial::print_hex("e1000: BAR0", bar_phys);
-        let regs = paging::map_mmio(bar_phys, 128 * 1024);
+        // Read BAR0 — handle 32-bit and 64-bit BARs
+        let bar0_raw = crate::pci::config_read32(d.bus, d.dev, d.func, 0x10) as u64;
+        serial::print_hex("e1000: BAR0 raw", bar0_raw);
+        let bar_phys = if (bar0_raw & 0x6) == 0x4 {
+            // 64-bit BAR: combine BAR0 + BAR1
+            let bar1 = crate::pci::config_read32(d.bus, d.dev, d.func, 0x14) as u64;
+            (bar1 << 32) | (bar0_raw & !0xF)
+        } else {
+            bar0_raw & !0xF
+        };
+        serial::print_hex("e1000: bar_phys", bar_phys);
 
-        // Reset
-        let ctrl = unsafe { (regs.add(CTRL) as *const u32).read_volatile() };
-        unsafe { (regs.add(CTRL) as *mut u32).write_volatile(ctrl | CTRL_RST); }
-        for _ in 0..10_000 { core::hint::spin_loop(); }
-        // Wait for reset to clear
-        loop {
+        if bar_phys == 0 {
+            serial::print("e1000: BAR not initialized, skipping\n");
+            continue;
+        }
+
+        // Map BAR0 (128KB MMIO, uncached)
+        let regs = paging::map_mmio(bar_phys, 131072);
+        serial::print("e1000: MMIO mapped\n");
+
+        // Read CTRL before reset — if it's 0xFFFFFFFF, BAR mapping is wrong
+        let ctrl_before = unsafe { (regs.add(CTRL) as *const u32).read_volatile() };
+        serial::print_hex("e1000: CTRL before reset", ctrl_before as u64);
+        if ctrl_before == 0xFFFF_FFFF {
+            serial::print("e1000: CTRL=0xFFFFFFFF, BAR mapping invalid! Skipping\n");
+            continue;
+        }
+
+        // Software reset (set RST bit, wait for it to clear)
+        unsafe {
+            let c = (regs.add(CTRL) as *const u32).read_volatile();
+            (regs.add(CTRL) as *mut u32).write_volatile(c | CTRL_RST);
+        }
+        // Small delay then poll with timeout
+        for _ in 0..10_000u32 { core::hint::spin_loop(); }
+        let mut reset_ok = false;
+        for _ in 0..500_000u32 {
             let c = unsafe { (regs.add(CTRL) as *const u32).read_volatile() };
-            if c & CTRL_RST == 0 { break; }
+            if c & CTRL_RST == 0 { reset_ok = true; break; }
+            core::hint::spin_loop();
+        }
+        serial::print_hex("e1000: reset_ok", reset_ok as u64);
+        if !reset_ok {
+            // Try continuing anyway — QEMU sometimes needs different handling
+            serial::print("e1000: reset did not clear, continuing anyway\n");
         }
 
         // Link up
@@ -283,7 +392,7 @@ pub fn init(devices: &[crate::pci::PciDevice]) {
             (regs.add(TCTL) as *mut u32).write_volatile(TCTL_EN | TCTL_PSP | (15 << 4) | (63 << 12));
         }
 
-        serial::print("e1000: ready\n");
+        serial::print("e1000: READY - setting NIC\n");
 
         *NIC.lock() = Some(E1000 {
             regs, mac,

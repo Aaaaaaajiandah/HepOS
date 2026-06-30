@@ -176,14 +176,21 @@ pub fn handle_frame(frame: &[u8]) {
 /// Returns round-trip string or error.
 pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
     use alloc::format;
-    // Step 1: ARP to resolve target
+    // Step 1: NIC check
     {
         let nic = NIC.lock();
         if nic.is_none() {
-            return format!("ping: no network interface (e1000 not found/initialized)");
+            return format!("ping: no NIC - check 'ifconfig' for details");
         }
-        crate::serial::print_hex("ping: NIC MAC[0]", nic.as_ref().unwrap().mac[0] as u64);
+        let mac = nic.as_ref().unwrap().mac;
+        crate::serial::print("ping: NIC found, MAC=");
+        for (i,&b) in mac.iter().enumerate() {
+            if i>0 { crate::serial::print(":"); }
+            crate::serial::print_hex("",b as u64);
+        }
+        crate::serial::print("\n");
     }
+    // Step 2: ARP
     arp_request(target_ip);
     crate::serial::print("ping: ARP sent, polling...\n");
     // Poll for ARP reply (up to 500ms equivalent)

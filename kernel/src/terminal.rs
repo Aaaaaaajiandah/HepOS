@@ -420,6 +420,63 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
+            "netstart" => {
+                // Force-initialize e1000 from terminal (bar at 0xFEBC0000 from lspci)
+                self.print_colored("Starting e1000...\n", DIM);
+                crate::e1000::force_init(0xFEBC_0000);
+                if crate::e1000::NIC.lock().is_some() {
+                    self.print_colored("NIC initialized! Try ping 10.0.2.2\n", OK);
+                    crate::net::arp_announce();
+                } else {
+                    self.print_colored("NIC still None - check serial\n", ERR);
+                }
+            }
+
+            "netdiag" => {
+                // Read e1000 PCI config and registers directly (bus=0,dev=3,func=0)
+                let bus = 0u8; let dev = 3u8; let func = 0u8;
+                let vid = crate::pci::config_read16(bus, dev, func, 0x00);
+                let did = crate::pci::config_read16(bus, dev, func, 0x02);
+                let cmd = crate::pci::config_read16(bus, dev, func, 0x04);
+                let bar0 = crate::pci::config_read32(bus, dev, func, 0x10);
+                let bar1 = crate::pci::config_read32(bus, dev, func, 0x14);
+                self.print(&alloc::format!("00:03.0  VID:{:04X} DID:{:04X}\n", vid, did));
+                self.print(&alloc::format!("CMD: {:04X}\n", cmd));
+                self.print(&alloc::format!("BAR0: {:08X}  BAR1: {:08X}\n", bar0, bar1));
+
+                // Compute BAR physical address
+                let bar_phys = if (bar0 & 6) == 4 {
+                    ((bar1 as u64) << 32) | ((bar0 & !0xF) as u64)
+                } else {
+                    (bar0 & !0xF) as u64
+                };
+                self.print(&alloc::format!("BAR phys: {:016X}\n", bar_phys));
+
+                if bar_phys != 0 {
+                    // Map and read CTRL + STATUS
+                    let regs = crate::paging::map_mmio(bar_phys, 131072);
+                    let ctrl   = unsafe { (regs as *const u32).read_volatile() };
+                    let status = unsafe { (regs.add(8) as *const u32).read_volatile() };
+                    let ral    = unsafe { (regs.add(0x5400) as *const u32).read_volatile() };
+                    let rah    = unsafe { (regs.add(0x5404) as *const u32).read_volatile() };
+                    self.print(&alloc::format!("CTRL:   {:08X}\n", ctrl));
+                    self.print(&alloc::format!("STATUS: {:08X}\n", status));
+                    self.print(&alloc::format!("RAL:    {:08X}  RAH: {:08X}\n", ral, rah));
+                    let mac = [
+                        (ral & 0xFF) as u8, (ral >> 8 & 0xFF) as u8,
+                        (ral >> 16 & 0xFF) as u8, (ral >> 24) as u8,
+                        (rah & 0xFF) as u8, (rah >> 8 & 0xFF) as u8,
+                    ];
+                    self.print(&alloc::format!(
+                        "MAC: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\n",
+                        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]));
+                    self.print(&alloc::format!("e1000::NIC is {}\n",
+                        if crate::e1000::NIC.lock().is_some() { "SOME" } else { "NONE" }));
+                } else {
+                    self.print_colored("BAR phys = 0, device not initialized by BIOS\n", ERR);
+                }
+            }
+
             "lspci" => {
                 let devs = crate::PCI_DEVS.lock();
                 for d in devs.iter() {
@@ -434,9 +491,12 @@ impl Terminal {
 
             "ifconfig" => {
                 let has_nic = crate::e1000::NIC.lock().is_some();
-                if !has_nic { self.print_colored("eth0: no NIC detected\n", ERR); }
                 let mac = crate::e1000::NIC.lock()
                     .as_ref().map(|n| n.mac).unwrap_or([0;6]);
+                if !has_nic {
+                    self.print_colored("eth0: NIC not initialized\n", ERR);
+                    self.print_colored("      (check serial for e1000 init messages)\n", DIM);
+                }
                 let ip = crate::net::MY_IP;
                 let gw = crate::net::GW_IP;
                 self.print_colored("eth0\n", OK);
