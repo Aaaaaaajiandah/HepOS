@@ -38,6 +38,7 @@ pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
 // Focus: None = cursor mode (WASD moves cursor), Some(id) = window has keyboard focus
 pub static FOCUSED_WIN: Mutex<Option<usize>> = Mutex::new(None);
+pub static PCI_DEVS: Mutex<alloc::vec::Vec<pci::PciDevice>> = Mutex::new(alloc::vec::Vec::new());
 
 #[used] static BASE_REVISION:       BaseRevision       = BaseRevision::new();
 #[used] static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
@@ -158,6 +159,8 @@ extern "C" fn kmain() -> ! {
 
     // PCI enumeration
     let pci_devices = pci::enumerate();
+    // Store for lspci command
+    *PCI_DEVS.lock() = pci_devices.clone();
     serial::print("PCI devices:\n");
     for d in &pci_devices {
         serial::print("  ");

@@ -420,6 +420,18 @@ impl Terminal {
                 self.print(" KB total\n");
             }
 
+            "lspci" => {
+                let devs = crate::PCI_DEVS.lock();
+                for d in devs.iter() {
+                    self.print(&alloc::format!(
+                        "{:02X}:{:02X}.{} {:04X}:{:04X} {}\n",
+                        d.bus, d.dev, d.func,
+                        d.vendor_id, d.device_id,
+                        crate::pci::class_name(d.class, d.subclass)
+                    ));
+                }
+            }
+
             "ifconfig" => {
                 let has_nic = crate::e1000::NIC.lock().is_some();
                 if !has_nic { self.print_colored("eth0: no NIC detected\n", ERR); }

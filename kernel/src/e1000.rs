@@ -170,10 +170,25 @@ pub static NIC: spin::Mutex<Option<E1000>> = spin::Mutex::new(None);
 pub fn init(devices: &[crate::pci::PciDevice]) {
     use crate::serial;
 
+    // Debug: print all PCI vendor/device IDs
+    serial::print("PCI scan:\n");
     for d in devices {
-        let vid = crate::pci::config_read16(d.bus, d.dev, d.func, 0x00);
-        let did = crate::pci::config_read16(d.bus, d.dev, d.func, 0x02);
-        if vid != 0x8086 || did != 0x100E { continue; }
+        serial::print_hex("  VID", d.vendor_id as u64);
+        serial::print_hex("  DID", d.device_id as u64);
+    }
+
+    for d in devices {
+        // Use pre-parsed vendor_id/device_id from PCI struct
+        // Accept all common e1000 variants
+        if d.vendor_id != 0x8086 { continue; }
+        match d.device_id {
+            0x100E | 0x100F | 0x1010 | 0x1011 | 0x1026 | 0x1027 | 0x1028
+            | 0x1075 | 0x1076 | 0x1077 | 0x1078 | 0x1079 | 0x107A | 0x107B => {}
+            _ => {
+                serial::print_hex("  skipping Intel DID", d.device_id as u64);
+                continue;
+            }
+        }
 
         serial::print("e1000: found\n");
 
