@@ -416,48 +416,38 @@ fn task_blink() -> ! {
                     }
                 }
 
-                // 2. Render terminal — hardcoded at Terminal window content pos
-                {
-                    let mut tg = terminal::TERMINAL.lock();
-                    if let Some(term) = tg.as_mut() {
-                        // Find Terminal window position dynamically
-                        let (tx, ty, tw, th) = {
-                            let dt = desktop::DESKTOP.lock();
-                            dt.as_ref()
-                                .and_then(|d| d.windows.iter()
-                                    .find(|w| !w.minimized && w.title.as_str() == "Terminal")
-                                    .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
-                                )
-                                .unwrap_or((20, 240, 580, 200)) // fallback
-                        };
-                        term.render(display, tx, ty, tw, th);
-                        term.dirty = false;
-                    }
-                }
+                // 2-5. Render all window content IN Z-ORDER so topmost window always wins
+                let win_order: alloc::vec::Vec<(usize, i32, i32, usize, usize)> = {
+                    let dt = desktop::DESKTOP.lock();
+                    dt.as_ref().map(|d| d.windows.iter()
+                        .filter(|w| !w.minimized)
+                        .map(|w| (w.id, w.x, w.y, w.w, w.h))
+                        .collect()
+                    ).unwrap_or_default()
+                };
 
-                // 3. Render editor if open
-                {
-                    let editor_rect = {
-                        let dt = desktop::DESKTOP.lock();
-                        dt.as_ref().and_then(|d| {
-                            d.windows.iter()
-                                .find(|w| !w.minimized && w.id == 3)
-                                .map(|w| (w.x.max(0) as usize, w.y.max(0) as usize, w.w, w.h))
-                        })
-                    };
-                    if let Some((ex, ey, ew, eh)) = editor_rect {
-                        let mut eg = editor::EDITOR.lock();
-                        if let Some(ed) = eg.as_mut() {
-                            ed.render(display, ex, ey, ew, eh);
+                for (id, wx, wy, ww, wh) in win_order {
+                    let wx = wx.max(0) as usize;
+                    let wy = wy.max(0) as usize;
+                    match id {
+                        0 => render_welcome_window(display),
+                        1 => render_hepfs_window(display),
+                        2 => {
+                            let mut tg = terminal::TERMINAL.lock();
+                            if let Some(t) = tg.as_mut() {
+                                t.render(display, wx, wy, ww, wh);
+                                t.dirty = false;
+                            }
                         }
+                        3 => {
+                            let mut eg = editor::EDITOR.lock();
+                            if let Some(ed) = eg.as_mut() {
+                                ed.render(display, wx, wy, ww, wh);
+                            }
+                        }
+                        _ => {}
                     }
                 }
-
-                // 4. Render HepFS window — directory listing
-                render_hepfs_window(display);
-
-                // 4. Render Welcome window — system info
-                render_welcome_window(display);
 
                 // 5. Cursor mode indicator — yellow crosshair when unfocused
                 {
