@@ -295,6 +295,60 @@ Max file size: 12 × 4KB = 49KB (direct blocks only)
 
 ---
 
+## Key Global State (main.rs)
+
+```rust
+pub static DISPLAY:    Mutex<Option<Display>>            // GOP framebuffer
+pub static DESKTOP:    Mutex<Option<Desktop>>            // window manager
+pub static FOCUSED_WIN: Mutex<Option<usize>>             // None=cursor, Some(id)=focused
+pub static PCI_DEVS:   Mutex<Vec<PciDevice>>            // for lspci
+// In other modules:
+nvme::CONTROLLER       Mutex<Option<NvmeController>>    // global NVMe
+e1000::NIC             Mutex<Option<E1000>>
+rtl8139::NIC           Mutex<Option<Rtl8139>>
+terminal::TERMINAL     Mutex<Option<Terminal>>
+editor::EDITOR         Mutex<Option<Editor>>
+scheduler::SCHEDULER   Mutex<Scheduler>
+```
+
+## Render Loop (task_blink)
+
+Runs forever, renders desktop at ~60fps when dirty:
+```
+1. poll ps2 + mouse
+2. route keys: ESC=cursor mode, focused=Some(3)→editor, Some(2)→terminal, None→WASD
+3. clamp cursor, write back to MOUSE
+4. update_mouse (sets dirty flag)
+5. if dirty: render desktop → iterate windows in z-order:
+   id=0 → render_welcome_window()
+   id=1 → render_hepfs_window()
+   id=2 → terminal.render()
+   id=3 → editor.render()
+6. draw cursor (yellow in cursor mode, hidden when focused)
+7. sleep ~16ms
+```
+
+## Terminal Render Constants
+
+```rust
+const SCALE: usize = 2;     // 2× scale for readability
+const COLS:  usize = 30;    // characters per line
+const CHAR_W: usize = 19;   // pixels per column
+const CHAR_H: usize = 18;   // pixels per row
+```
+
+## Architecture Notes
+
+- **PMM only frees pages above 1MB**: avoids 0xA0000–0xFFFFF reserved hole (VGA/BIOS)
+- **Bump heap assumes contiguous pages**: first 256 PMM pages must be contiguous (true above 1MB on QEMU)
+- **CLI during NVMe init**: APIC timer fires during MMIO setup causing triple fault
+- **x2APIC (MSR mode)**: xAPIC MMIO at 0xFEE00000 isn't in Limine HHDM; MSRs bypass this
+- **PS/2 poll ordering**: `ps2::poll()` must run before `mouse::poll()` or mouse bytes get eaten
+- **QEMU SDL mouse**: SDL routes mouse to USB tablet by default, not PS/2 AUX — WASD is the workaround
+- **e1000 netstart**: auto-init panics somewhere during boot; `force_init(0xFEBC0000)` works from terminal
+
+---
+
 ## Dev Tips
 
 - **Serial output** → PowerShell terminal (early boot messages scroll past)
