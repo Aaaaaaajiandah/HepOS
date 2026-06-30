@@ -176,56 +176,17 @@ pub fn handle_frame(frame: &[u8]) {
 /// Returns round-trip string or error.
 pub fn ping(target_ip: [u8; 4]) -> alloc::string::String {
     use alloc::format;
-    // Step 1: NIC check
-    {
-        let nic = NIC.lock();
-        if nic.is_none() {
-            return format!("ping: no NIC - check 'ifconfig' for details");
-        }
-        let mac = nic.as_ref().unwrap().mac;
-        crate::serial::print("ping: NIC found, MAC=");
-        for (i,&b) in mac.iter().enumerate() {
-            if i>0 { crate::serial::print(":"); }
-            crate::serial::print_hex("",b as u64);
-        }
-        crate::serial::print("\n");
-    }
-    // Step 2: ARP
-    arp_request(target_ip);
-    crate::serial::print("ping: ARP sent, polling...\n");
-    // Poll for ARP reply (up to 500ms equivalent)
-    let mut dst_mac = [0u8; 6];
-    let mut got_mac = false;
-    let mut rx_count = 0u32;
-    // Paced poll: check recv, then pause to let QEMU's event loop run
-    for _ in 0..500u32 {
-        let frame = { NIC.lock().as_mut().and_then(|n| n.recv()) };
-        if let Some(f) = frame {
-            rx_count += 1;
-            if f.len() >= 14 {
-                let etype = u16::from_be_bytes([f[12], f[13]]);
-                if etype == 0x0806 && f.len() >= 42 {
-                    let op = u16::from_be_bytes([f[14+6], f[14+7]]);
-                    let sender_ip: [u8; 4] = f[14+14..14+18].try_into().unwrap_or([0;4]);
-                    if op == 2 && sender_ip == target_ip {
-                        dst_mac = f[14+8..14+14].try_into().unwrap_or([0;6]);
-                        got_mac = true;
-                        break;
-                    }
-                }
-                handle_frame(&f);
-            }
-        }
-        // Brief pause to yield to QEMU's event loop (~0.5ms each)
-        for _ in 0..40_000u32 { core::hint::spin_loop(); }
-    }
-    crate::serial::print_hex("ping: rx_count during ARP poll", rx_count as u64);
-    if !got_mac {
-        return format!("ping: no route to {}.{}.{}.{}",
-            target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
+    // NIC check
+    if NIC.lock().is_none() {
+        return format!("ping: no NIC - run netstart first");
     }
 
-    // Step 2: send echo request
+    // Skip ARP — QEMU SLiRP gateway MAC is always 52:55:0a:00:02:02
+    // SLiRP routes all IP traffic regardless of MAC, so we can hardcode this.
+    let dst_mac = [0x52u8, 0x55, 0x0a, 0x00, 0x02, 0x02];
+    crate::serial::print("ping: using SLiRP gateway MAC, skipping ARP\n");
+
+    // Send echo request
     *PING_REPLY.lock() = None;
     let seq = ping_send(target_ip, dst_mac);
     let start = crate::rtc::now();
