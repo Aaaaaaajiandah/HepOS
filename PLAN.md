@@ -243,7 +243,7 @@ Max file size: 12 × 4KB = 49KB (direct blocks only)
 | ✓ ARP, ICMP, IP checksum, eth_send | |
 | ✓ e1000 TX works (TDH advances, correct data) | |
 | ⚠ e1000 RX not working on QEMU Windows | |
-| ✓ RTL8139 driver written (simpler approach) | |
+| ⚠ RTL8139 driver written (simpler approach) but still doesnt work properly | |
 | ○ Actual ping working | |
 | ○ TCP/UDP, DNS, HTTP | |
 
