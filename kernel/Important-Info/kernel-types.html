@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kernel Architecture Types</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #101c31;
+      --text: #e8eefc;
+      --muted: #9eb0cf;
+      --accent: #74c0fc;
+      --border: rgba(255,255,255,0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #091221 0%, #0d1730 100%);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 24px; }
+    .topbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; }
+    .button {
+      display: inline-block;
+      padding: 9px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+    }
+    .hero { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 24px; }
+    .hero h1 { margin-bottom: 8px; }
+    .hero p { color: var(--muted); max-width: 760px; }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card h2 { margin-top: 0; margin-bottom: 8px; }
+    .card p, .card li { color: var(--muted); }
+    .card ul { padding-left: 18px; }
+    .note { color: var(--accent); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <a class="button" href="main.html">Back to HepOS</a>
+      <a class="button" href="languages.html">Kernel Languages</a>
+    </div>
+
+    <header class="hero">
+      <h1>Kernel architecture types</h1>
+      <p>Different operating systems organize their kernel services in different ways. Each style trades off simplicity, speed, safety, and flexibility.</p>
+    </header>
+
+    <section class="card">
+      <h2>Monolithic kernel</h2>
+      <p>A monolithic kernel puts most of the operating system in one large privileged body of code. This makes it very fast and straightforward for many early kernels, but it can become hard to maintain because the kernel grows into a big, tightly coupled system.</p>
+    </section>
+
+    <section class="card">
+      <h2>Microkernel</h2>
+      <p>A microkernel keeps only the most essential pieces in the kernel: scheduling, IPC, and basic memory management. Other services like filesystems, drivers, and networking usually run as separate user-space processes, which improves modularity and fault isolation.</p>
+    </section>
+
+    <section class="card">
+      <h2>Nanokernel</h2>
+      <p>A nanokernel goes even further than a microkernel and strips the kernel down to the bare minimum needed to manage hardware and basic abstractions. It is extremely minimal and usually only makes sense for highly specialized or research-oriented systems.</p>
+    </section>
+
+    <section class="card">
+      <h2>Exokernel</h2>
+      <p>An exokernel gives applications much more direct control over hardware resources. Instead of hiding everything behind a heavy abstraction layer, it exposes low-level mechanisms and lets the system or app decide how to use them. This approach is flexible and efficient, but it is also more complex to build and use correctly.</p>
+    </section>
+
+    <section class="card">
+      <h2>Hybrid kernel</h2>
+      <p>A hybrid kernel tries to combine the strengths of both monolithic and microkernel designs. It keeps some services in the kernel for performance, while still separating others into modules or user-space components. This is common in practical systems where speed matters but some modularity is still desired.</p>
+    </section>
+
+    <section class="card">
+      <h2>Unikernel</h2>
+      <p>A unikernel is a single-purpose image that bundles the application and the necessary operating system support into one very small artifact. It is often used in cloud, embedded, or specialized environments where minimal size and predictable behavior matter more than broad general-purpose features.</p>
+    </section>
+
+    <section class="card">
+      <h2>Full ring zero OS</h2>
+      <p>A full ring zero OS runs nearly everything at privilege level 0, meaning the kernel and its services share the same highest-privilege mode. This is simple and fast in a traditional sense, but it gives up some of the protection benefits of separating user and kernel modes.</p>
+    </section>
+
+    <section class="card">
+      <h2>Where HepOS fits</h2>
+      <p class="note">HepOS is best described as an exokernel-inspired project with a growing kernel-space libOS.</p>
+      <p>Its kernel focuses on multiplexing hardware directly, while higher-level desktop and filesystem services are built above that core. That makes it a good fit for the exokernel style, even though it still has many monolithic-era conveniences during development.</p>
+    </section>
+  </div>
+</body>
+</html>

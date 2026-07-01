@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Languages for Kernel Development</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #101c31;
+      --text: #e8eefc;
+      --muted: #9eb0cf;
+      --accent: #74c0fc;
+      --border: rgba(255,255,255,0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #091221 0%, #0d1730 100%);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 24px; }
+    .topbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; }
+    .button {
+      display: inline-block;
+      padding: 9px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+    }
+    .hero { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 24px; }
+    .hero h1 { margin-bottom: 8px; }
+    .hero p { color: var(--muted); max-width: 760px; }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card h2 { margin-top: 0; margin-bottom: 8px; }
+    .card p, .card li { color: var(--muted); }
+    .card ul { padding-left: 18px; }
+    .highlight { color: var(--accent); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <a class="button" href="main.html">Back to HepOS</a>
+      <a class="button" href="kernel-types.html">Kernel Types</a>
+    </div>
+
+    <header class="hero">
+      <h1>Languages for kernel development</h1>
+      <p>Operating systems are usually written in a mix of low-level languages. The best choice depends on safety, performance, portability, and the amount of manual control required.</p>
+    </header>
+
+    <section class="card">
+      <h2>C</h2>
+      <p>C is the classic choice for kernels because it offers excellent performance, predictable behavior, and a long history of use in operating systems. It is still one of the most practical choices for portable low-level code, especially when a project needs straightforward system-level access.</p>
+    </section>
+
+    <section class="card">
+      <h2>C++</h2>
+      <p>C++ can be used for kernel development when a project wants stronger abstractions, object-oriented structure, or templates. It is powerful, but its complexity and the need for careful memory and exception handling make it a less common choice for bare-metal kernels.</p>
+    </section>
+
+    <section class="card">
+      <h2>Rust</h2>
+      <p>Rust is attractive for kernels because it can provide memory safety and concurrency safety without a garbage collector. That makes it a strong option for modern systems software, especially when the goal is to reduce whole classes of bugs while still remaining low-level.</p>
+    </section>
+
+    <section class="card">
+      <h2>Assembly</h2>
+      <p>Assembly is still essential for the lowest-level boot code, interrupt entry points, context switches, and architecture-specific glue. It is not usually used for an entire kernel unless the project is very small or wants maximum control over a specific CPU feature.</p>
+    </section>
+
+    <section class="card">
+      <h2>Zig</h2>
+      <p>Zig is a newer systems language that offers a simpler and more explicit model than C or C++, with good interop and low-level control. It is appealing for kernel work because it can be more ergonomic than C while still being close to the hardware.</p>
+    </section>
+
+    <section class="card">
+      <h2>What HepOS uses</h2>
+      <p><span class="highlight">HepOS is primarily written in Rust</span>, with the required low-level assembly pieces handled where the architecture demands them. This keeps the overall system modern and safer while still allowing direct control over boot and hardware interaction.</p>
+    </section>
+  </div>
+</body>
+</html>
