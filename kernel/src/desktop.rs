@@ -48,6 +48,11 @@ pub struct Window {
     drag_off_x:    i32,
     drag_off_y:    i32,
     pub dragging:  bool,
+    resizing:      bool,
+    resize_orig_w: usize,
+    resize_orig_h: usize,
+    resize_orig_mx: i32,
+    resize_orig_my: i32,
 }
 
 impl Window {
@@ -56,6 +61,8 @@ impl Window {
             id, title: String::from(title),
             x, y, w, h, minimized: false,
             drag_off_x: 0, drag_off_y: 0, dragging: false,
+            resizing: false, resize_orig_w: w, resize_orig_h: h,
+            resize_orig_mx: 0, resize_orig_my: 0,
         }
     }
 
@@ -76,6 +83,12 @@ impl Window {
     pub fn content_hit(&self, mx: i32, my: i32) -> bool {
         mx >= self.x && mx < self.x + self.w as i32
             && my >= self.y && my < self.y + self.h as i32
+    }
+    // 12×12 px corner resize handle in bottom-right of content area
+    pub fn resize_hit(&self, mx: i32, my: i32) -> bool {
+        let rx = self.x + self.w as i32;
+        let by = self.y + self.h as i32;
+        mx >= rx - 12 && mx < rx && my >= by - 12 && my < by
     }
 }
 
@@ -129,10 +142,18 @@ impl Desktop {
         let held     = buttons & 0x01 != 0;
         self.prev_btn = buttons;
 
-        // Drag
+        // Drag or resize
         if held {
             if let Some(fid) = self.focused {
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == fid) {
+                    if win.resizing {
+                        let dw = mx - win.resize_orig_mx;
+                        let dh = my - win.resize_orig_my;
+                        win.w = (win.resize_orig_w as i32 + dw).max(120) as usize;
+                        win.h = (win.resize_orig_h as i32 + dh).max(60) as usize;
+                        self.dirty = true;
+                        return;
+                    }
                     if win.dragging {
                         win.x = (mx - win.drag_off_x).max(0).min(self.fb_w as i32 - win.w as i32);
                         win.y = (my - win.drag_off_y).max(TITLE_H as i32).min(self.fb_h as i32 - TASKBAR_H as i32 - 1);
@@ -142,7 +163,12 @@ impl Desktop {
                 }
             }
         }
-        if released { for win in &mut self.windows { win.dragging = false; } }
+        if released {
+            for win in &mut self.windows {
+                win.dragging = false;
+                win.resizing = false;
+            }
+        }
 
         if !clicked { return; }
 
@@ -204,7 +230,9 @@ impl Desktop {
         let mut hit_id = None;
         for win in self.windows.iter().rev() {
             if win.minimized { continue; }
-            if win.close_hit(mx, my) || win.title_hit(mx, my) || win.content_hit(mx, my) {
+            if win.close_hit(mx, my) || win.title_hit(mx, my)
+                || win.resize_hit(mx, my) || win.content_hit(mx, my)
+            {
                 hit_id = Some(win.id);
                 break;
             }
@@ -216,6 +244,12 @@ impl Desktop {
             if win.close_hit(mx, my) {
                 win.minimized = true;
                 self.focused  = None;
+            } else if win.resize_hit(mx, my) {
+                win.resizing       = true;
+                win.resize_orig_w  = win.w;
+                win.resize_orig_h  = win.h;
+                win.resize_orig_mx = mx;
+                win.resize_orig_my = my;
             } else if win.title_hit(mx, my) {
                 win.dragging   = true;
                 win.drag_off_x = mx - win.x;
@@ -261,6 +295,16 @@ impl Desktop {
         // Content background
         display.fill_rect(win.x.max(0) as usize, win.y.max(0) as usize, win.w, win.h, pal::WIN_BG);
         display.fill_rect(win.x.max(0) as usize, win.y.max(0) as usize, win.w, 1, pal::BORDER);
+
+        // Resize handle — three diagonal dots in bottom-right corner
+        let rx = (win.x + win.w as i32 - 2).max(0) as usize;
+        let by = (win.y + win.h as i32 - 2).max(0) as usize;
+        let hc = if focused { pal::BORDER_ACT } else { pal::BORDER };
+        for d in 0..3usize {
+            if rx >= d * 3 + 1 && by >= d + 1 {
+                display.fill_rect(rx - d * 3, by - d, 2, 1, hc);
+            }
+        }
     }
 
     /// Draw the taskbar. Call this after all window content so it stays on top.

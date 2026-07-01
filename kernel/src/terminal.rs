@@ -149,6 +149,8 @@ impl Terminal {
                 self.col = 0; self.row = 0;
                 self.show_prompt();
             }
+            b'\t' => { self.tab_complete(); }
+
             ps2::KEY_UP | 0x10 => { // UP arrow or Ctrl+P — history previous
                 if self.history.is_empty() { self.dirty = true; return; }
                 let new_idx = match self.history_idx {
@@ -200,6 +202,67 @@ impl Terminal {
         for ch in new.bytes() {
             self.cmd_buf.push(ch as char);
             self.put_char(ch, TEXT);
+        }
+    }
+
+    fn tab_complete(&mut self) {
+        const CMDS: &[&str] = &[
+            "help", "clear", "pwd", "ls", "cd", "cat", "mkdir", "touch",
+            "rm", "cp", "mv", "write", "edit", "uname", "mem", "date",
+            "history", "lspci", "netdiag", "netstart", "netpoll", "ifconfig",
+            "ping", "shutdown", "reboot", "echo", "sysinfo",
+        ];
+
+        let partial = self.cmd_buf.clone();
+
+        // Split into the word-before-last-space and the word being completed
+        let (prefix, word) = match partial.rfind(' ') {
+            None       => ("", partial.as_str()),   // completing the command verb
+            Some(pos)  => (&partial[..=pos], &partial[pos + 1..]),
+        };
+
+        let matches: alloc::vec::Vec<alloc::string::String> = if prefix.is_empty() {
+            // Completing command name
+            CMDS.iter()
+                .filter(|c| c.starts_with(word))
+                .map(|c| alloc::string::String::from(*c))
+                .collect()
+        } else {
+            // Completing file/directory name
+            let cwd = self.cwd_ino;
+            self.with_ctrl(|ctrl| {
+                crate::hepfs::list_dir(ctrl, cwd)
+                    .into_iter()
+                    .filter(|(_, n)| n.starts_with(word))
+                    .map(|(_, n)| n)
+                    .collect()
+            })
+        };
+
+        match matches.len() {
+            0 => { /* no match — do nothing */ }
+            1 => {
+                // Single match: complete in-place with a trailing space
+                let completed = alloc::format!("{}{} ", prefix, matches[0]);
+                self.replace_input(&completed);
+            }
+            _ => {
+                // Multiple matches: show them on a new line, then re-display prompt + partial
+                self.print_colored("\n", DIM);
+                for m in &matches {
+                    self.print_colored(m, OK);
+                    self.print_colored("  ", DIM);
+                }
+                self.print_colored("\n", DIM);
+                self.cmd_buf.clear();
+                self.show_prompt();
+                // Re-show what the user had typed
+                let p = partial.clone();
+                for ch in p.bytes() {
+                    self.cmd_buf.push(ch as char);
+                    self.put_char(ch, TEXT);
+                }
+            }
         }
     }
 
