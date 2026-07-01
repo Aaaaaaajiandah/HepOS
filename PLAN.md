@@ -26,7 +26,7 @@ kernel/
   linker.ld      Custom linker script (Limine protocol sections)
   src/
     main.rs        kmain entry, global state, task_blink, window rendering, HepFS click handler
-    framebuffer.rs GOP pixel/rect/text renderer (8×8 bitmap font, LSB-first)
+    framebuffer.rs GOP pixel/rect/text renderer — 8×8 bitmap font, double-buffered (backbuf flush)
     gdt.rs         GDT (null, code64, data64)
     idt.rs         IDT, exception stubs, timer_stub
     pmm.rs         Bitmap PMM (pages above 1MB only, alloc_contiguous)
@@ -304,6 +304,7 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ✓/○ | Feature |
 |-----|---------|
 | ✓ | PS/2 keyboard — full scancode set 1, extended, all modifiers |
+| ✓ | PS/2 mouse — relative with non-linear acceleration (1×/2×/3× by speed) |
 | ✓ | XHCI USB host controller + USB HID tablet (absolute mouse) |
 | ✓ | NVMe — admin + IO queues |
 | ✓ | RTL8139 NIC — TX only |
@@ -326,10 +327,12 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ✓/○ | Feature |
 |-----|---------|
 | ✓ | Floating compositor — correct z-order, chrome+content per window |
+| ✓ | Double-buffered rendering — backbuf flush, no tearing or flicker |
 | ✓ | Drag-to-move, drag-to-resize (bottom-right handle, min 120×60) |
 | ✓ | Close button minimizes to taskbar |
 | ✓ | Start menu (all programs) + taskbar (open windows only) + live clock |
 | ✓ | Mouse click syncs visual + keyboard focus |
+| ✓ | Context-sensitive cursor — crosshair normally, SE-resize icon over corner handle |
 | ○ | Window maximize / snap to half-screen |
 | ○ | Desktop icons / wallpaper |
 | ○ | Multiple instances of the same app |
@@ -465,6 +468,7 @@ Lines stored as `[Cell; MAX_COLS]` — no per-line allocation. `self.cols` is up
 - **x2APIC via MSR** — xAPIC MMIO at 0xFEE00000 is outside Limine's HHDM; MSR mode avoids needing to map it
 - **PS/2 poll order** — `ps2::poll()` before `mouse::poll()`; both read port 0x60; mouse bytes get eaten if order is wrong
 - **XHCI ring wrap** — Link TRB TC must be 1 on every wrap. If only set on odd wraps, XHC stops toggling PCS and transfers freeze after wrap 2
+- **Double-buffered rendering** — all drawing targets a PMM-backed backbuffer (`width×height u32`, ~3.5 MB at 1280×720); `flush()` copies each row to the physical framebuffer in one shot at the end of the frame, eliminating tearing and flicker
 - **Z-order rendering** — chrome + content drawn together per window in z-order so a lower window's content can't overdraw a higher window's title bar
 - **build.rs** — emits `-T<path>/linker.ld` via `cargo:rustc-link-arg` using `CARGO_MANIFEST_DIR`. Replaces the old hardcoded Windows absolute path in config.toml
 
