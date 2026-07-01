@@ -42,6 +42,15 @@ pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 pub static FOCUSED_WIN: Mutex<Option<usize>> = Mutex::new(None);
 pub static PCI_DEVS: Mutex<alloc::vec::Vec<pci::PciDevice>> = Mutex::new(alloc::vec::Vec::new());
 
+// HepFS navigator state (current directory + back/forward history)
+struct HepfsNav {
+    ino:  u32,
+    path: alloc::string::String,
+    back: alloc::vec::Vec<(u32, alloc::string::String)>,
+    fwd:  alloc::vec::Vec<(u32, alloc::string::String)>,
+}
+static HEPFS_NAV: Mutex<Option<HepfsNav>> = Mutex::new(None);
+
 #[used] static BASE_REVISION:       BaseRevision       = BaseRevision::new();
 #[used] static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used] static HHDM_REQUEST:        HhdmRequest        = HhdmRequest::new();
@@ -128,6 +137,14 @@ extern "C" fn kmain() -> ! {
     // Init terminal NOW before sti so task_blink sees it immediately
     terminal::init();
     serial::print("Terminal init\n");
+
+    // HepFS navigator starts at root
+    *HEPFS_NAV.lock() = Some(HepfsNav {
+        ino:  hepfs::ROOT_INO,
+        path: alloc::string::String::from("/"),
+        back: alloc::vec::Vec::new(),
+        fwd:  alloc::vec::Vec::new(),
+    });
 
     // Minimize editor until a file is opened; focus terminal (id=2)
     {
@@ -388,50 +405,151 @@ fn task_blink() -> ! {
             }
         }
 
-        // HepFS window: click on a file entry to open it in the editor
+        // Sync keyboard focus with visual focus whenever a mouse click brings a window forward.
+        // This fixes the case where the user clicks a window in cursor mode and expects to type.
         if fresh_click {
-            let target = {
+            let clicked_focus = {
+                let dt = desktop::DESKTOP.lock();
+                dt.as_ref().and_then(|d| d.focused)
+            };
+            if let Some(fid) = clicked_focus {
+                *FOCUSED_WIN.lock() = Some(fid);
+            }
+        }
+
+        // HepFS window: navigate directories and open files on click
+        if fresh_click {
+            // Determine where in the HepFS window was clicked
+            let hepfs_click = {
                 let dt = desktop::DESKTOP.lock();
                 dt.as_ref().and_then(|d| {
                     let win = d.windows.iter().find(|w| w.id == 1 && !w.minimized)?;
-                    // Content area starts at (win.x, win.y); header takes 22px
                     if mx < win.x || mx >= win.x + win.w as i32 { return None; }
-                    if my < win.y + 22 || my >= win.y + win.h as i32 { return None; }
-                    let entry_idx = (my - win.y - 22) as usize / 14;
-                    Some(entry_idx)
+                    if my < win.y || my >= win.y + win.h as i32  { return None; }
+                    let rel_x = (mx - win.x) as usize;
+                    let rel_y = my - win.y;
+                    if rel_y < 22 {
+                        // Nav bar: back=0, fwd=1, none=2
+                        let zone = if rel_x < 22 { 0usize }
+                                   else if rel_x < 44 { 1 }
+                                   else { 2 };
+                        Some((0i32, zone)) // rel_y sentinel 0 = nav bar
+                    } else {
+                        // File list (entries start at row y=23)
+                        let entry_idx = (rel_y - 23).max(0) as usize / 14;
+                        Some((1, entry_idx))
+                    }
                 })
             };
-            if let Some(idx) = target {
-                // Resolve entry → open in editor if it's a file
-                let file_info = {
-                    let mut ctrl = nvme::CONTROLLER.lock();
-                    ctrl.as_mut().map(|ctrl| {
-                        let entries = hepfs::list_dir(ctrl, hepfs::ROOT_INO);
-                        if let Some((ino, name)) = entries.get(idx) {
-                            let inode = hepfs::read_inode(ctrl, *ino);
-                            (name.clone(), inode.flags != hepfs::F_DIR)
-                        } else {
-                            (alloc::string::String::new(), false)
+
+            match hepfs_click {
+                Some((0, 0)) => {
+                    // Back button
+                    let mut nav = HEPFS_NAV.lock();
+                    if let Some(nav) = nav.as_mut() {
+                        if let Some((pino, ppath)) = nav.back.pop() {
+                            let cur_ino  = nav.ino;
+                            let cur_path = nav.path.clone();
+                            nav.fwd.push((cur_ino, cur_path));
+                            nav.ino  = pino;
+                            nav.path = ppath;
                         }
-                    })
-                };
-                if let Some((name, is_file)) = file_info {
-                    if is_file && !name.is_empty() {
-                        let path = alloc::format!("/{}", name);
-                        editor::open(&path);
-                        {
-                            let mut dt = desktop::DESKTOP.lock();
-                            if let Some(dt) = dt.as_mut() {
-                                if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
-                                    w.minimized = false;
-                                }
-                                dt.bring_to_front(3);
-                                dt.dirty = true;
+                    }
+                    let mut dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+                }
+                Some((0, 1)) => {
+                    // Forward button
+                    let mut nav = HEPFS_NAV.lock();
+                    if let Some(nav) = nav.as_mut() {
+                        if let Some((nino, npath)) = nav.fwd.pop() {
+                            let cur_ino  = nav.ino;
+                            let cur_path = nav.path.clone();
+                            nav.back.push((cur_ino, cur_path));
+                            nav.ino  = nino;
+                            nav.path = npath;
+                        }
+                    }
+                    let mut dt = desktop::DESKTOP.lock();
+                    if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+                }
+                Some((1, idx)) => {
+                    // File list entry click
+                    let cur_ino = HEPFS_NAV.lock().as_ref().map(|n| n.ino).unwrap_or(hepfs::ROOT_INO);
+                    let at_root = cur_ino == hepfs::ROOT_INO;
+
+                    // ".." row (only shown when not at root)
+                    if !at_root && idx == 0 {
+                        // Navigate up: back button behaviour
+                        let mut nav = HEPFS_NAV.lock();
+                        if let Some(nav) = nav.as_mut() {
+                            if let Some((pino, ppath)) = nav.back.pop() {
+                                let ci = nav.ino;
+                                let cp = nav.path.clone();
+                                nav.fwd.push((ci, cp));
+                                nav.ino  = pino;
+                                nav.path = ppath;
                             }
                         }
-                        *FOCUSED_WIN.lock() = Some(3);
+                        let mut dt = desktop::DESKTOP.lock();
+                        if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+                    } else {
+                        // Real entry index (subtract 1 if ".." row is shown)
+                        let real_idx = if !at_root { idx.saturating_sub(1) } else { idx };
+                        let entry = {
+                            let mut ctrl = nvme::CONTROLLER.lock();
+                            ctrl.as_mut().and_then(|ctrl| {
+                                let entries = hepfs::list_dir(ctrl, cur_ino);
+                                entries.get(real_idx).map(|(ino, name)| {
+                                    let inode = hepfs::read_inode(ctrl, *ino);
+                                    (*ino, name.clone(), inode.flags)
+                                })
+                            })
+                        };
+                        if let Some((ino, name, flags)) = entry {
+                            if flags == hepfs::F_DIR {
+                                // Navigate into directory
+                                let mut nav = HEPFS_NAV.lock();
+                                if let Some(nav) = nav.as_mut() {
+                                    let cur_ino2 = nav.ino;
+                                    let cur_path = nav.path.clone();
+                                    nav.back.push((cur_ino2, cur_path));
+                                    nav.fwd.clear();
+                                    nav.ino = ino;
+                                    nav.path = if nav.path == "/" {
+                                        alloc::format!("/{}", name)
+                                    } else {
+                                        alloc::format!("{}/{}", nav.path, name)
+                                    };
+                                }
+                                let mut dt = desktop::DESKTOP.lock();
+                                if let Some(dt) = dt.as_mut() { dt.dirty = true; }
+                            } else {
+                                // Open file in editor
+                                let cur_path = HEPFS_NAV.lock().as_ref().map(|n| n.path.clone())
+                                    .unwrap_or_else(|| alloc::string::String::from("/"));
+                                let file_path = if cur_path == "/" {
+                                    alloc::format!("/{}", name)
+                                } else {
+                                    alloc::format!("{}/{}", cur_path, name)
+                                };
+                                editor::open(&file_path);
+                                {
+                                    let mut dt = desktop::DESKTOP.lock();
+                                    if let Some(dt) = dt.as_mut() {
+                                        if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
+                                            w.minimized = false;
+                                        }
+                                        dt.bring_to_front(3);
+                                        dt.dirty = true;
+                                    }
+                                }
+                                *FOCUSED_WIN.lock() = Some(3);
+                            }
+                        }
                     }
                 }
+                _ => {}
             }
         }
 
@@ -551,29 +669,114 @@ fn render_hepfs_window(display: &mut framebuffer::Display) {
     let acc  = framebuffer::Color::from_hex(0x6C8EFF);
     let text = framebuffer::Color::from_hex(0xE8E8E8);
     let dim  = framebuffer::Color::from_hex(0x888888);
+    let nav_bg   = framebuffer::Color::from_hex(0x0F0F1A);
+    let btn_bg   = framebuffer::Color::from_hex(0x1A1A30);
+    let path_bg  = framebuffer::Color::from_hex(0x0D0D18);
+    let dir_col  = framebuffer::Color::from_hex(0x88AAFF);
 
+    // Background
     display.fill_rect(wx, wy, ww, wh, bg);
-    display.fill_rect(wx, wy, ww, 2, acc);
-    display.draw_text(wx + 4, wy + 6, "/ (root)", acc, 1);
+
+    // ── Nav bar (22px tall) ──────────────────────────────────────────────────
+    let nav_h: usize = 22;
+    display.fill_rect(wx, wy, ww, nav_h, nav_bg);
+
+    let (has_back, has_fwd, cur_path, cur_ino) = {
+        let nav = HEPFS_NAV.lock();
+        if let Some(n) = nav.as_ref() {
+            (!n.back.is_empty(), !n.fwd.is_empty(), n.path.clone(), n.ino)
+        } else {
+            (false, false, alloc::string::String::from("/"), hepfs::ROOT_INO)
+        }
+    };
+
+    // Back button
+    display.fill_rect(wx + 2, wy + 4, 18, 14, btn_bg);
+    display.draw_text(wx + 6,  wy + 6, "<",
+        if has_back { acc } else { dim }, 1);
+
+    // Forward button
+    display.fill_rect(wx + 22, wy + 4, 18, 14, btn_bg);
+    display.draw_text(wx + 27, wy + 6, ">",
+        if has_fwd { acc } else { dim }, 1);
+
+    // Path bar
+    let path_x = wx + 44;
+    let path_w = ww.saturating_sub(46);
+    display.fill_rect(path_x, wy + 4, path_w, 14, path_bg);
+    // Trim path if too long for the bar
+    let max_chars = path_w / 9;
+    let display_path = if cur_path.len() > max_chars && max_chars > 0 {
+        &cur_path[cur_path.len() - max_chars..]
+    } else { &cur_path };
+    display.draw_text(path_x + 2, wy + 6, display_path, text, 1);
+
+    // Separator
+    display.fill_rect(wx, wy + nav_h, ww, 1, acc);
+
+    // ── File list ────────────────────────────────────────────────────────────
+    let list_top = wy + nav_h + 1;
+    let at_root  = cur_ino == hepfs::ROOT_INO;
+    let mut y = list_top + 2;
+
+    // ".." entry when not at root
+    if !at_root {
+        display.draw_text(wx + 4,  y, "d", dim, 1);
+        display.draw_text(wx + 16, y, "..", dir_col, 1);
+        y += 14;
+    }
 
     let mut ctrl = nvme::CONTROLLER.lock();
     if let Some(ctrl) = ctrl.as_mut() {
-        let entries = hepfs::list_dir(ctrl, hepfs::ROOT_INO);
-        let mut y = wy + 22;
+        let entries = hepfs::list_dir(ctrl, cur_ino);
         for (ino, name) in &entries {
-            if y + 14 > wy + wh { break; }
+            if y + 12 > wy + wh { break; }
             let inode = hepfs::read_inode(ctrl, *ino);
-            let prefix = if inode.flags == hepfs::F_DIR { "d " } else { "f " };
-            display.draw_text(wx + 4, y, prefix, dim, 1);
-            display.draw_text(wx + 22, y, name, text, 1);
+            let is_dir = inode.flags == hepfs::F_DIR;
+            let (pfx, col) = if is_dir { ("d", dir_col) } else { ("f", text) };
+            display.draw_text(wx + 4,  y, pfx, dim, 1);
+            display.draw_text(wx + 16, y, name, col, 1);
+            // File size on right
+            if !is_dir {
+                let sz = fmt_size(inode.size);
+                let chars = sz.iter().position(|&b| b == 0).unwrap_or(sz.len());
+                let sx = wx + ww.saturating_sub(chars * 9 + 4);
+                display.draw_text(sx, y, core::str::from_utf8(&sz[..chars]).unwrap_or(""), dim, 1);
+            }
             y += 14;
         }
-        if entries.is_empty() {
-            display.draw_text(wx + 4, wy + 22, "(empty)", dim, 1);
+        if entries.is_empty() && at_root {
+            display.draw_text(wx + 4, list_top + 4, "(empty)", dim, 1);
         }
     } else {
-        display.draw_text(wx + 4, wy + 22, "No NVMe", dim, 1);
+        display.draw_text(wx + 4, list_top + 4, "No NVMe", dim, 1);
     }
+}
+
+/// Format a byte count into a compact string (e.g. "1.2 KB").
+fn fmt_size(bytes: u64) -> [u8; 12] {
+    let mut buf = [0u8; 12];
+    if bytes < 1024 {
+        write_num(bytes, &mut buf, "B")
+    } else if bytes < 1024 * 1024 {
+        write_num(bytes / 1024, &mut buf, "KB")
+    } else {
+        write_num(bytes / 1024 / 1024, &mut buf, "MB")
+    }
+    buf
+}
+
+fn write_num(n: u64, buf: &mut [u8; 12], suffix: &str) {
+    let mut tmp = [0u8; 8];
+    let mut i = 8usize;
+    let mut n = n;
+    if n == 0 { tmp[7] = b'0'; i = 7; }
+    while n > 0 { i -= 1; tmp[i] = b'0' + (n % 10) as u8; n /= 10; }
+    let num_bytes = &tmp[i..];
+    let mut pos = 0usize;
+    for &b in num_bytes { if pos < 12 { buf[pos] = b; pos += 1; } }
+    buf[pos] = b' '; pos += 1;
+    for b in suffix.bytes() { if pos < 12 { buf[pos] = b; pos += 1; } }
 }
 
 fn render_welcome_window(display: &mut framebuffer::Display) {
