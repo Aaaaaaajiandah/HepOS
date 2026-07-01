@@ -1,91 +1,141 @@
+//! Slab allocator — 10 size classes (8 B … 4096 B), lazy PMM-backed free lists.
+//! Large allocations (> 4096 B) go directly to/from contiguous PMM pages.
+//! Dealloc is fully implemented: memory is returned to the free list or PMM.
+
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::pmm;
-use crate::vmm;
+use core::ptr;
+use spin::Mutex;
+use crate::{pmm, vmm};
 
-// 1 MB initial heap — bump allocator, dealloc is a no-op.
-// Replace with slab/pool allocator once the OS is further along.
-const HEAP_PAGES: usize = 256;
-const PAGE_SIZE:  usize = 4096;
+const PAGE_SIZE: usize = 4096;
 
-static HEAP_START: AtomicUsize = AtomicUsize::new(0);
-static HEAP_END:   AtomicUsize = AtomicUsize::new(0);
-static HEAP_NEXT:  AtomicUsize = AtomicUsize::new(0);
+// Ten power-of-two size classes covering 8 B to one full page.
+const SIZE_CLASSES: [usize; 10] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+const NUM_CLASSES:  usize       = 10;
 
-pub struct BumpHeap;
+// ── Inner state ────────────────────────────────────────────────────────────────
 
-impl BumpHeap {
-    pub fn init(&self) {
-        // Allocate contiguous virtual region by chaining physical pages via HHDM.
-        // Since our PMM hands out pages that increase monotonically from low addresses,
-        // and HHDM maps them linearly, consecutive alloc_page calls give us a
-        // virtually-contiguous region most of the time.
-        // For correctness we just track start/end of the first page and bump within.
-        // We pre-fault all pages now so no surprises later.
+struct SlabInner {
+    /// Head of per-class free list. Each free chunk's first word is the
+    /// next pointer (intrusive singly-linked list stored in the chunk itself).
+    free_lists: [*mut u8; NUM_CLASSES],
+}
 
-        let mut base: usize = 0;
-        let mut prev_end: usize = 0;
+// SAFETY: single-core kernel; all access is gated by the outer Mutex.
+unsafe impl Send for SlabInner {}
+unsafe impl Sync for SlabInner {}
 
-        for i in 0..HEAP_PAGES {
-            let phys = pmm::alloc_page().expect("heap: out of physical memory");
-            let virt = vmm::phys_to_virt(phys) as usize;
+impl SlabInner {
+    const fn new() -> Self {
+        Self { free_lists: [ptr::null_mut(); NUM_CLASSES] }
+    }
 
-            // Zero page
-            unsafe { core::ptr::write_bytes(virt as *mut u8, 0, PAGE_SIZE); }
+    /// Smallest size class index that can satisfy `layout`.
+    ///
+    /// Each chunk of class `i` lives at an offset that is a multiple of
+    /// `SIZE_CLASSES[i]` within a page-aligned PMM page, so it is naturally
+    /// aligned to `SIZE_CLASSES[i]`.  We therefore require the class size
+    /// to cover both the requested size and alignment.  The minimum of 8
+    /// ensures every free chunk can store one pointer.
+    fn class_for(layout: &Layout) -> Option<usize> {
+        let min = layout.size()
+            .max(layout.align())
+            .max(core::mem::size_of::<usize>());
+        SIZE_CLASSES.iter().position(|&sz| sz >= min)
+    }
 
-            if i == 0 {
-                base = virt;
-                HEAP_START.store(virt, Ordering::Relaxed);
-                HEAP_NEXT .store(virt, Ordering::Relaxed);
-            }
-
-            // If pages aren't contiguous, just extend end to cover non-contiguous
-            // virtual addresses — the bump pointer will handle it linearly.
-            prev_end = virt + PAGE_SIZE;
-            let _ = prev_end;
+    unsafe fn alloc(&mut self, layout: Layout) -> *mut u8 {
+        // Zero-sized types: return a well-aligned non-null dangling pointer.
+        if layout.size() == 0 {
+            return layout.align() as *mut u8;
         }
 
-        // We take a simpler approach: build a single bump region using the FIRST
-        // page's address as base. Later pages might not be contiguous in the HHDM,
-        // so let's instead pre-allocate a large contiguous physical block by
-        // doing all pages and using the first as base + page_count * PAGE_SIZE.
-        //
-        // On QEMU with sequential PMM allocation, pages ARE physically contiguous
-        // so HHDM virtual addresses are also contiguous. This works in practice.
-        let end = base + HEAP_PAGES * PAGE_SIZE;
-        HEAP_END.store(end, Ordering::Relaxed);
+        // Large allocation — bypass the slab and use contiguous PMM pages.
+        if layout.size() > PAGE_SIZE {
+            let n = pages_for(layout.size());
+            return match pmm::alloc_contiguous(n) {
+                Some(phys) => vmm::phys_to_virt(phys),
+                None       => ptr::null_mut(),
+            };
+        }
+
+        let ci         = match Self::class_for(&layout) { Some(i) => i, None => return ptr::null_mut() };
+        let chunk_size = SIZE_CLASSES[ci];
+
+        // Fast path: pop from free list.
+        if !self.free_lists[ci].is_null() {
+            let node = self.free_lists[ci];
+            // First word of the chunk is the next-pointer.
+            self.free_lists[ci] = ptr::read(node as *const *mut u8);
+            return node;
+        }
+
+        // Slow path: grab a fresh PMM page and slice it into chunks.
+        let phys = match pmm::alloc_page() { Some(p) => p, None => return ptr::null_mut() };
+        let base = vmm::phys_to_virt(phys);
+
+        // Thread chunks [1 .. count) onto the free list in reverse so that
+        // subsequent allocations return them in ascending address order.
+        let count = PAGE_SIZE / chunk_size;
+        for i in (1..count).rev() {
+            let chunk = base.add(i * chunk_size);
+            ptr::write(chunk as *mut *mut u8, self.free_lists[ci]);
+            self.free_lists[ci] = chunk;
+        }
+
+        // Return chunk[0] directly to the caller.
+        base
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        if ptr.is_null() || layout.size() == 0 {
+            return;
+        }
+
+        // Large allocation — return pages to PMM.
+        if layout.size() > PAGE_SIZE {
+            let n    = pages_for(layout.size());
+            let phys = ptr as u64 - vmm::hhdm_offset();
+            for i in 0..n {
+                pmm::free_page(phys + (i * PAGE_SIZE) as u64);
+            }
+            return;
+        }
+
+        let ci = match Self::class_for(&layout) { Some(i) => i, None => return };
+
+        // Push the chunk onto the head of the free list.
+        ptr::write(ptr as *mut *mut u8, self.free_lists[ci]);
+        self.free_lists[ci] = ptr;
     }
 }
 
-unsafe impl GlobalAlloc for BumpHeap {
+#[inline]
+fn pages_for(bytes: usize) -> usize {
+    (bytes + PAGE_SIZE - 1) / PAGE_SIZE
+}
+
+// ── Public interface ───────────────────────────────────────────────────────────
+
+static SLAB: Mutex<SlabInner> = Mutex::new(SlabInner::new());
+
+pub struct SlabHeap;
+
+impl SlabHeap {
+    /// No-op: the slab is lazily initialised on first allocation.
+    /// Kept so `heap::HEAP.init()` in main.rs continues to compile.
+    pub fn init(&self) {}
+}
+
+unsafe impl GlobalAlloc for SlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let align = layout.align();
-        let size  = layout.size();
-
-        loop {
-            let current = HEAP_NEXT.load(Ordering::Relaxed);
-            let aligned = (current + align - 1) & !(align - 1);
-            let new_next = aligned + size;
-
-            if new_next > HEAP_END.load(Ordering::Relaxed) {
-                return core::ptr::null_mut();
-            }
-
-            match HEAP_NEXT.compare_exchange(
-                current, new_next, Ordering::Relaxed, Ordering::Relaxed,
-            ) {
-                Ok(_)  => return aligned as *mut u8,
-                Err(_) => continue, // retry (won't happen single-core, but be safe)
-            }
-        }
+        SLAB.lock().alloc(layout)
     }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // Bump allocator — dealloc is intentionally a no-op.
-        // Memory is reclaimed when the kernel shuts down (i.e., never).
-        // Replace with a slab allocator when memory pressure matters.
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        SLAB.lock().dealloc(ptr, layout)
     }
 }
 
 #[global_allocator]
-pub static HEAP: BumpHeap = BumpHeap;
+pub static HEAP: SlabHeap = SlabHeap;

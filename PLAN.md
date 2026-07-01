@@ -291,9 +291,9 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ✓ | PCI config-space enumeration |
 | ✓ | Serial debug (panic prints file:line:message) |
 | ✓ | Cross-platform build (build.rs, build.sh, build.ps1) |
+| ✓ | Slab allocator — 10 size classes (8B–4KB), large allocs via PMM, full dealloc |
 | ○ | Syscall gate (SYSCALL/SYSRET) |
 | ○ | Per-process page tables, TSS |
-| ○ | Slab / free-list allocator (bump can't free) |
 
 ### Drivers
 | ✓/○ | Feature |
@@ -359,7 +359,6 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | Issue | Status |
 |-------|--------|
 | Network RX broken on QEMU/Windows | SLiRP path issue — TX works fine; RX works on Linux/KVM |
-| Heap cannot free memory | Bump allocator by design — slab allocator needed |
 | NVMe size reported as 0 MB | Identify Namespace command hangs; workaround: hardcoded 512B/block |
 | ACPI shutdown only on QEMU | Hardcoded port 0x604 — real hardware needs FADT parsing |
 | Terminal text doesn't reflow on resize | Existing output stays at old column width; new input uses current width |
@@ -369,8 +368,7 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 ## Next Steps (Priority Order)
 
 1. **Networking RX on Linux/KVM** — confirm RTL8139/e1000 RX works there; if yes, QEMU/Windows is a known environment issue not a bug
-2. **Slab allocator** — replace bump heap with a free-list so memory can be reclaimed; required before userspace is safe
-3. **Syscall interface** — SYSCALL/SYSRET gate, ring 3 entry/exit, basic `write`/`exit` syscalls
+2. **Syscall interface** — SYSCALL/SYSRET gate, ring 3 entry/exit, basic `write`/`exit` syscalls
 4. **Per-process page tables + TSS** — isolated address spaces; prerequisite for real userspace
 5. **ELF loader** — parse and map ELF64 executables into a user process; run a hello-world binary
 6. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
