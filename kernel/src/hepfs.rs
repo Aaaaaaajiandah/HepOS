@@ -6,6 +6,8 @@
 //!   Blocks 2–5   : Block bitmap  (4 blocks = 131 072 bits)
 //!   Blocks 6–37  : Inode table   (32 blocks × 32 inodes = 1 024 inodes)
 //!   Blocks 38+   : Data blocks
+//!
+//! Max file size: 12 direct × 4 KB + 1024 indirect × 4 KB = 48 KB + 4 MB ≈ 4.1 MB
 
 use alloc::{string::String, vec::Vec};
 use crate::{nvme::NvmeController, pmm, vmm};
@@ -32,6 +34,7 @@ pub const F_DIR:           u32 = 2;
 
 const DIR_ENTRY_SIZE:      usize = 32;
 const ENTRIES_PER_BLK:     usize = BLOCK_SIZE / DIR_ENTRY_SIZE; // 128
+const PTRS_PER_INDIRECT:   usize = BLOCK_SIZE / 4;              // 1024 block pointers per indirect block
 
 // ── On-disk structures ───────────────────────────────────────────────────────
 #[repr(C)]
@@ -333,16 +336,17 @@ pub fn create_dir(ctrl: &mut NvmeController, parent: u32, name: &str) -> u32 {
     ino
 }
 
-/// Write data to a file (overwrites from offset 0). Max ~48 KB (12 direct blocks).
+/// Write data to a file (overwrites from offset 0).
+/// Max size: 12 direct blocks + 1024 indirect blocks = ~4.1 MB.
 pub fn write_file(ctrl: &mut NvmeController, ino: u32, data: &[u8]) {
     let mut inode = read_inode(ctrl, ino);
     assert!(inode.flags == F_FILE, "not a file");
 
     let mut remaining = data;
-    let mut block_idx = 0;
+    let mut block_idx = 0usize;
 
-    while !remaining.is_empty() {
-        assert!(block_idx < DIRECT_PTRS, "file too large for direct blocks");
+    // Phase 1: direct blocks (0..12)
+    while !remaining.is_empty() && block_idx < DIRECT_PTRS {
         if inode.direct[block_idx] == 0 {
             inode.direct[block_idx] = alloc_block(ctrl);
             inode.nblocks += 1;
@@ -354,6 +358,43 @@ pub fn write_file(ctrl: &mut NvmeController, ino: u32, data: &[u8]) {
         write_block(ctrl, blk, &page);
         remaining  = &remaining[chunk..];
         block_idx += 1;
+    }
+
+    // Phase 2: single indirect block (logical blocks 12..12+1024)
+    if !remaining.is_empty() {
+        if inode.indirect == 0 {
+            inode.indirect = alloc_block(ctrl);
+            inode.nblocks += 1;
+        }
+        // Load indirect table (array of 1024 u32 block numbers)
+        let ind_page = read_block(ctrl, inode.indirect as u64);
+        let ind_buf  = ind_page.as_mut_slice();
+        let mut ind_idx = 0usize;
+
+        while !remaining.is_empty() {
+            assert!(ind_idx < PTRS_PER_INDIRECT, "file too large (>4 MB)");
+            let ptr_off = ind_idx * 4;
+            let existing = u32::from_le_bytes([
+                ind_buf[ptr_off], ind_buf[ptr_off+1],
+                ind_buf[ptr_off+2], ind_buf[ptr_off+3],
+            ]);
+            let blk = if existing != 0 {
+                existing
+            } else {
+                let b = alloc_block(ctrl);
+                inode.nblocks += 1;
+                ind_buf[ptr_off..ptr_off+4].copy_from_slice(&b.to_le_bytes());
+                b
+            };
+            let chunk = remaining.len().min(BLOCK_SIZE);
+            let page  = Page::alloc();
+            page.as_mut_slice()[..chunk].copy_from_slice(&remaining[..chunk]);
+            write_block(ctrl, blk as u64, &page);
+            remaining = &remaining[chunk..];
+            ind_idx  += 1;
+        }
+        // Flush indirect table (may have new block pointers written in)
+        write_block(ctrl, inode.indirect as u64, &ind_page);
     }
 
     inode.size = data.len() as u64;
@@ -372,9 +413,25 @@ pub fn remove(ctrl: &mut NvmeController, parent_ino: u32, name: &str) -> bool {
     if ino == ROOT_INO { return false; }
     if inode.flags == F_DIR && !list_dir(ctrl, ino).is_empty() { return false; }
 
-    // Free data blocks
+    // Free direct data blocks
     for &blk in inode.direct.iter().filter(|&&b| b != 0) {
         bitmap_set(ctrl, BLOCK_BM_BLOCK, blk as u64, false);
+    }
+
+    // Free indirect data blocks, then the indirect block itself
+    if inode.indirect != 0 {
+        let ind_page = read_block(ctrl, inode.indirect as u64);
+        let ind_buf  = ind_page.as_slice();
+        for i in 0..PTRS_PER_INDIRECT {
+            let ptr_off = i * 4;
+            let blk = u32::from_le_bytes([
+                ind_buf[ptr_off], ind_buf[ptr_off+1],
+                ind_buf[ptr_off+2], ind_buf[ptr_off+3],
+            ]);
+            if blk == 0 { break; }
+            bitmap_set(ctrl, BLOCK_BM_BLOCK, blk as u64, false);
+        }
+        bitmap_set(ctrl, BLOCK_BM_BLOCK, inode.indirect as u64, false);
     }
 
     // Free inode
@@ -412,6 +469,8 @@ pub fn read_file(ctrl: &mut NvmeController, ino: u32) -> Vec<u8> {
     assert!(inode.flags == F_FILE, "not a file");
     let mut out = Vec::with_capacity(inode.size as usize);
     let mut left = inode.size as usize;
+
+    // Phase 1: direct blocks
     for &blk in inode.direct.iter().filter(|&&b| b != 0) {
         if left == 0 { break; }
         let page  = read_block(ctrl, blk as u64);
@@ -419,5 +478,25 @@ pub fn read_file(ctrl: &mut NvmeController, ino: u32) -> Vec<u8> {
         out.extend_from_slice(&page.as_slice()[..chunk]);
         left -= chunk;
     }
+
+    // Phase 2: single indirect block
+    if left > 0 && inode.indirect != 0 {
+        let ind_page = read_block(ctrl, inode.indirect as u64);
+        let ind_buf  = ind_page.as_slice();
+        for i in 0..PTRS_PER_INDIRECT {
+            if left == 0 { break; }
+            let ptr_off = i * 4;
+            let blk = u32::from_le_bytes([
+                ind_buf[ptr_off], ind_buf[ptr_off+1],
+                ind_buf[ptr_off+2], ind_buf[ptr_off+3],
+            ]);
+            if blk == 0 { break; }
+            let page  = read_block(ctrl, blk as u64);
+            let chunk = left.min(BLOCK_SIZE);
+            out.extend_from_slice(&page.as_slice()[..chunk]);
+            left -= chunk;
+        }
+    }
+
     out
 }
