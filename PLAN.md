@@ -364,7 +364,7 @@ Absolute range: 0–32767 → scaled to framebuffer resolution.
 ## Next Steps (Priority Order)
 
 1. ~~**Ctrl+F find in editor**~~ ✓ done
-2. **Terminal reflow on resize** — recalculate COLS from window width so terminal uses full width
+2. ~~**Terminal reflow on resize**~~ ✓ done
 3. **RTL8139 / networking** — test on Linux/KVM; if confirmed working there, QEMU Windows is a known non-issue
 4. **Indirect blocks in HepFS** — one extra `indirect` pointer per inode unlocks files up to ~4MB
 5. **Settings / sysmon window** — real-time RAM graph, uptime, connected PCI devices list

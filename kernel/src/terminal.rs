@@ -6,12 +6,12 @@ use spin::Mutex;
 use crate::{framebuffer::{Color, Display}, ps2};
 
 // Terminal dimensions (in character cells) — scale 2 (18×18 px per cell)
-const SCALE:      usize = 2;
-pub const COLS:   usize = 30;
-pub const ROWS:   usize = 10;
-const SCROLLBACK: usize = 200;
-const CHAR_W:     usize = 9 * SCALE + 1;   // 19 px per column
-const CHAR_H:     usize = 8 * SCALE + 2;   // 18 px per row
+const SCALE:        usize = 2;
+const MAX_COLS:     usize = 120;  // maximum cols (cell array width)
+const DEFAULT_COLS: usize = 30;   // initial cols before first render
+const SCROLLBACK:   usize = 200;
+const CHAR_W:       usize = 9 * SCALE + 1;   // 19 px per column
+const CHAR_H:       usize = 8 * SCALE + 2;   // 18 px per row
 
 // Palette
 const TEXT:   Color = Color::from_hex(0xE8E8E8);
@@ -32,7 +32,8 @@ impl Cell {
 }
 
 pub struct Terminal {
-    lines:       Vec<[Cell; COLS]>,
+    lines:       Vec<[Cell; MAX_COLS]>,
+    cols:        usize,   // current usable column count (≤ MAX_COLS), updated by render()
     col:         usize,
     row:         usize,
     pub dirty:   bool,
@@ -51,12 +52,12 @@ pub struct Terminal {
 impl Terminal {
     pub fn new() -> Self {
         let mut lines = Vec::new();
-        // Pre-fill with blank lines
         for _ in 0..SCROLLBACK {
-            lines.push([Cell::blank(); COLS]);
+            lines.push([Cell::blank(); MAX_COLS]);
         }
         let mut t = Terminal {
             lines,
+            cols: DEFAULT_COLS,
             col: 0, row: 0, dirty: true,
             cmd_buf: String::new(), cmd_cursor: 0,
             prompt_row: 0, prompt_col: 0,
@@ -103,7 +104,7 @@ impl Terminal {
                     self.lines[self.row][self.col] = Cell { ch, color };
                 }
                 self.col += 1;
-                if self.col >= COLS {
+                if self.col >= self.cols {
                     self.col = 0;
                     self.advance_row();
                 }
@@ -115,9 +116,8 @@ impl Terminal {
     fn advance_row(&mut self) {
         self.row += 1;
         if self.row >= SCROLLBACK {
-            // Shift lines up
             self.lines.remove(0);
-            self.lines.push([Cell::blank(); COLS]);
+            self.lines.push([Cell::blank(); MAX_COLS]);
             self.row = SCROLLBACK - 1;
         }
     }
@@ -146,8 +146,8 @@ impl Terminal {
                     // Shift all cells from col leftward to close the gap
                     let row = self.row;
                     let c = self.col;
-                    for i in c..COLS - 1 { self.lines[row][i] = self.lines[row][i + 1]; }
-                    self.lines[row][COLS - 1] = Cell::blank();
+                    for i in c..self.cols - 1 { self.lines[row][i] = self.lines[row][i + 1]; }
+                    self.lines[row][self.cols - 1] = Cell::blank();
                 }
             }
             b'\x01' => { // Ctrl+A — jump to start of input
@@ -164,7 +164,7 @@ impl Terminal {
                 self.show_prompt();
             }
             b'\x0C' | b'\x0B' => { // Ctrl+L or Ctrl+K = clear
-                for line in &mut self.lines { *line = [Cell::blank(); COLS]; }
+                for line in &mut self.lines { *line = [Cell::blank(); MAX_COLS]; }
                 self.col = 0; self.row = 0;
                 self.show_prompt();
             }
@@ -210,7 +210,7 @@ impl Terminal {
                 }
             }
             ch if ch >= 32 => {
-                if self.cmd_buf.len() < COLS - 2 {
+                if self.cmd_buf.len() < self.cols.saturating_sub(2) {
                     if self.cmd_cursor == self.cmd_buf.len() {
                         // At end — just append
                         self.cmd_buf.push(ch as char);
@@ -221,7 +221,7 @@ impl Terminal {
                         self.cmd_buf.insert(self.cmd_cursor, ch as char);
                         let row = self.row;
                         let c = self.col;
-                        for i in (c..COLS - 1).rev() { self.lines[row][i + 1] = self.lines[row][i]; }
+                        for i in (c..self.cols - 1).rev() { self.lines[row][i + 1] = self.lines[row][i]; }
                         self.lines[row][c] = Cell { ch, color: TEXT };
                         self.col += 1;
                         self.cmd_cursor += 1;
@@ -237,7 +237,7 @@ impl Terminal {
         // Erase entire current input by blanking the cells from prompt_col
         let row = self.prompt_row;
         let end = self.prompt_col + self.cmd_buf.len();
-        for c in self.prompt_col..end.min(COLS) { self.lines[row][c] = Cell::blank(); }
+        for c in self.prompt_col..end.min(self.cols) { self.lines[row][c] = Cell::blank(); }
         self.col = self.prompt_col;
         self.cmd_buf.clear();
         self.cmd_cursor = 0;
@@ -351,7 +351,7 @@ impl Terminal {
             }
 
             "clear" => {
-                for line in &mut self.lines { *line = [Cell::blank(); COLS]; }
+                for line in &mut self.lines { *line = [Cell::blank(); MAX_COLS]; }
                 self.col = 0; self.row = 0;
             }
 
@@ -804,11 +804,20 @@ impl Terminal {
     }
 
     /// Render terminal content into the window content area.
-    pub fn render(&self, display: &mut Display, wx: usize, wy: usize, ww: usize, wh: usize) {
+    pub fn render(&mut self, display: &mut Display, wx: usize, wy: usize, ww: usize, wh: usize) {
+        // Update column count to match window width
+        let new_cols = ((ww.saturating_sub(8)) / CHAR_W).max(10).min(MAX_COLS);
+        if new_cols != self.cols {
+            self.cols = new_cols;
+            // Clamp cursor to new width so it doesn't go out of bounds
+            if self.col >= self.cols { self.col = self.cols - 1; }
+            if self.prompt_col >= self.cols { self.prompt_col = 0; }
+        }
+
         // Fill background
         display.fill_rect(wx, wy, ww, wh, BG);
 
-        // Accent line at top so we can see the render is happening
+        // Accent line at top
         display.fill_rect(wx, wy, ww, 2, CURSOR);
 
         let visible_rows = (wh.saturating_sub(6)) / CHAR_H;
@@ -825,7 +834,7 @@ impl Terminal {
             let py = wy + 4 + r * CHAR_H;
             if py + CHAR_H > wy + wh { break; }
 
-            for (ci, cell) in line.iter().enumerate() {
+            for (ci, cell) in line[..self.cols].iter().enumerate() {
                 let px = wx + 4 + ci * CHAR_W;
                 if px + CHAR_W > wx + ww { break; }
                 if cell.ch > b' ' {
