@@ -18,14 +18,18 @@ impl Color {
 }
 
 pub struct Display {
-    addr:   *mut u8,
-    width:  usize,
-    height: usize,
-    pitch:  usize,
-    bpp:    usize,
+    addr:    *mut u8,
+    width:   usize,
+    height:  usize,
+    pitch:   usize,
+    bpp:     usize,
     r_shift: u8,
     g_shift: u8,
     b_shift: u8,
+    // Software backbuffer — all rendering targets this; flush() copies to the FB
+    // in one shot so the user never sees a partially-drawn frame.
+    backbuf:     *mut u32,  // null until init_backbuf() is called
+    backbuf_len: usize,     // width * height (0 until allocated)
 }
 
 unsafe impl Send for Display {}
@@ -33,19 +37,59 @@ unsafe impl Send for Display {}
 impl Display {
     pub fn new(fb: &Framebuffer) -> Self {
         Self {
-            addr:     fb.address() as *mut u8,
-            width:    fb.width as usize,
-            height:   fb.height as usize,
-            pitch:    fb.pitch as usize,
-            bpp:      fb.bpp as usize / 8,
-            r_shift:  fb.red_mask_shift,
-            g_shift:  fb.green_mask_shift,
-            b_shift:  fb.blue_mask_shift,
+            addr:    fb.address() as *mut u8,
+            width:   fb.width as usize,
+            height:  fb.height as usize,
+            pitch:   fb.pitch as usize,
+            bpp:     fb.bpp as usize / 8,
+            r_shift: fb.red_mask_shift,
+            g_shift: fb.green_mask_shift,
+            b_shift: fb.blue_mask_shift,
+            backbuf:     core::ptr::null_mut(),
+            backbuf_len: 0,
+        }
+    }
+
+    /// Allocate a contiguous PMM-backed backbuffer so all rendering is deferred
+    /// until flush().  Falls back to direct FB writes if allocation fails.
+    pub fn init_backbuf(&mut self) {
+        if self.bpp != 4 { return; }
+        let pixels = self.width * self.height;
+        let bytes  = pixels * 4;
+        let pages  = (bytes + 4095) / 4096;
+        if let Some(phys) = crate::pmm::alloc_contiguous(pages) {
+            let virt = crate::vmm::phys_to_virt(phys);
+            unsafe { core::ptr::write_bytes(virt, 0, bytes); }
+            self.backbuf     = virt as *mut u32;
+            self.backbuf_len = pixels;
+        }
+    }
+
+    /// Copy the completed backbuffer to the physical framebuffer in one memcpy
+    /// per row.  Only call after all rendering for this frame is done.
+    pub fn flush(&mut self) {
+        if self.backbuf.is_null() || self.bpp != 4 { return; }
+        let pitch_u32 = self.pitch / 4;
+        unsafe {
+            for y in 0..self.height {
+                core::ptr::copy_nonoverlapping(
+                    self.backbuf.add(y * self.width),
+                    (self.addr as *mut u32).add(y * pitch_u32),
+                    self.width,
+                );
+            }
         }
     }
 
     pub fn width(&self)  -> usize { self.width  }
     pub fn height(&self) -> usize { self.height }
+
+    #[inline]
+    fn pack_color(&self, c: Color) -> u32 {
+        ((c.r as u32) << self.r_shift)
+        | ((c.g as u32) << self.g_shift)
+        | ((c.b as u32) << self.b_shift)
+    }
 
     #[inline]
     pub fn put_pixel_pub(&mut self, x: usize, y: usize, c: Color) {
@@ -55,28 +99,47 @@ impl Display {
     #[inline]
     fn put_pixel(&mut self, x: usize, y: usize, c: Color) {
         if x >= self.width || y >= self.height { return; }
-        let offset = y * self.pitch + x * self.bpp;
-        let pixel: u32 = ((c.r as u32) << self.r_shift)
-                       | ((c.g as u32) << self.g_shift)
-                       | ((c.b as u32) << self.b_shift);
-        unsafe {
-            let px = self.addr.add(offset) as *mut u32;
-            *px = pixel;
+        let pixel = self.pack_color(c);
+        if !self.backbuf.is_null() {
+            unsafe { *self.backbuf.add(y * self.width + x) = pixel; }
+        } else {
+            let offset = y * self.pitch + x * self.bpp;
+            unsafe { *(self.addr.add(offset) as *mut u32) = pixel; }
         }
     }
 
     pub fn clear(&mut self, c: Color) {
-        for y in 0..self.height {
-            for x in 0..self.width {
-                self.put_pixel(x, y, c);
+        let pixel = self.pack_color(c);
+        if !self.backbuf.is_null() {
+            // Fast path: single fill over the whole backbuffer
+            unsafe {
+                core::slice::from_raw_parts_mut(self.backbuf, self.backbuf_len)
+                    .fill(pixel);
+            }
+        } else {
+            for y in 0..self.height {
+                for x in 0..self.width { self.put_pixel(x, y, c); }
             }
         }
     }
 
     pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
-        for row in y..y.saturating_add(h) {
-            for col in x..x.saturating_add(w) {
-                self.put_pixel(col, row, c);
+        let pixel  = self.pack_color(c);
+        let x_end  = (x + w).min(self.width);
+        let y_end  = (y + h).min(self.height);
+        if x >= x_end { return; }
+        if !self.backbuf.is_null() {
+            // Fast path: fill each row with a single slice::fill call
+            let row_len = x_end - x;
+            for row in y..y_end {
+                unsafe {
+                    let ptr = self.backbuf.add(row * self.width + x);
+                    core::slice::from_raw_parts_mut(ptr, row_len).fill(pixel);
+                }
+            }
+        } else {
+            for row in y..y_end {
+                for col in x..x_end { self.put_pixel(col, row, c); }
             }
         }
     }
@@ -88,13 +151,7 @@ impl Display {
             for (row, &bits) in glyph.iter().enumerate() {
                 for col in 0..8usize {
                     if bits & (1 << col) != 0 {
-                        self.fill_rect(
-                            cx + col * scale,
-                            y + row * scale,
-                            scale,
-                            scale,
-                            c,
-                        );
+                        self.fill_rect(cx + col * scale, y + row * scale, scale, scale, c);
                     }
                 }
             }

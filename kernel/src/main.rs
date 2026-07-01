@@ -125,6 +125,11 @@ extern "C" fn kmain() -> ! {
         display.draw_text(x_mid - (mem_str.len() * 9 / 2), y_mid + 72, mem_str, dim, 1);
     }
 
+    // Allocate backbuffer so all rendering is atomic (no tearing / flicker)
+    if let Some(display) = DISPLAY.lock().as_mut() {
+        display.init_backbuf();
+    }
+
     // Init desktop BEFORE enabling interrupts so task_blink sees it immediately
     {
         let fb = FRAMEBUFFER_REQUEST.response()
@@ -598,10 +603,54 @@ fn task_blink() -> ! {
                 {
                     let cx = mx as usize;
                     let cy = my as usize;
-                    let col = framebuffer::Color::from_hex(0xFFFFFF);
-                    display.fill_rect(cx.saturating_sub(6), cy, 13, 1, col);
-                    display.fill_rect(cx, cy.saturating_sub(6), 1, 13, col);
+                    let white = framebuffer::Color::from_hex(0xFFFFFF);
+                    let black = framebuffer::Color::from_hex(0x111111);
+
+                    // Show a SE-resize cursor when hovering or actively dragging a corner
+                    let over_resize = {
+                        let dt = desktop::DESKTOP.lock();
+                        dt.as_ref().map(|d| {
+                            d.windows.iter().any(|w| w.resizing)
+                            || d.windows.iter().rev()
+                                .any(|w| !w.minimized && w.resize_hit(mx, my))
+                        }).unwrap_or(false)
+                    };
+
+                    if over_resize {
+                        // Shadow pass (1 px down-right) for contrast on light content
+                        for i in -4_i32..=4 {
+                            let px = (cx as i32 + i + 1).max(0) as usize;
+                            let py = (cy as i32 + i + 1).max(0) as usize;
+                            display.put_pixel_pub(px, py, black);
+                        }
+                        // NW arrowhead shadow
+                        display.fill_rect(cx.saturating_sub(3), cy.saturating_sub(5)+1, 5, 1, black);
+                        display.fill_rect(cx.saturating_sub(5)+1, cy.saturating_sub(3), 1, 4, black);
+                        // SE arrowhead shadow
+                        display.fill_rect(cx + 1, cy + 5, 5, 1, black);
+                        display.fill_rect(cx + 5, cy + 1, 1, 4, black);
+
+                        // Diagonal (NW–SE)
+                        for i in -4_i32..=4 {
+                            let px = (cx as i32 + i).max(0) as usize;
+                            let py = (cy as i32 + i).max(0) as usize;
+                            display.put_pixel_pub(px, py, white);
+                        }
+                        // NW arrowhead: top bar + left bar
+                        display.fill_rect(cx.saturating_sub(3), cy.saturating_sub(5), 5, 1, white);
+                        display.fill_rect(cx.saturating_sub(5), cy.saturating_sub(3), 1, 4, white);
+                        // SE arrowhead: bottom bar + right bar
+                        display.fill_rect(cx + 1, cy + 5, 4, 1, white);
+                        display.fill_rect(cx + 5, cy + 1, 1, 4, white);
+                    } else {
+                        // Normal crosshair cursor
+                        display.fill_rect(cx.saturating_sub(6), cy, 13, 1, white);
+                        display.fill_rect(cx, cy.saturating_sub(6), 1, 13, white);
+                    }
                 }
+
+                // 6. Flush backbuffer → physical framebuffer (atomic, no tearing)
+                display.flush();
             }
         }
 

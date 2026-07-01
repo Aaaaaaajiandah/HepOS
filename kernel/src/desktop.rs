@@ -48,7 +48,7 @@ pub struct Window {
     drag_off_x:    i32,
     drag_off_y:    i32,
     pub dragging:  bool,
-    resizing:      bool,
+    pub resizing:  bool,
     resize_orig_w: usize,
     resize_orig_h: usize,
     resize_orig_mx: i32,

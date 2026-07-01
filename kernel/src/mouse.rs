@@ -32,6 +32,16 @@ impl MouseState {
 
 pub static MOUSE: Mutex<MouseState> = Mutex::new(MouseState::new());
 
+/// Simple non-linear acceleration: small movements stay precise,
+/// large movements are multiplied to cover more screen distance.
+#[inline]
+fn accel(delta: i32) -> i32 {
+    let d = delta.abs();
+    if d >= 10 { delta * 3 }
+    else if d >= 5 { delta * 2 }
+    else { delta }
+}
+
 fn handle_ps2_byte(b: u8) {
     let mut m = MOUSE.lock();
     match m.cycle {
@@ -47,8 +57,8 @@ fn handle_ps2_byte(b: u8) {
             let flags = m.packet[0];
             let dx = m.packet[1] as i32 - if flags & 0x10 != 0 { 256 } else { 0 };
             let dy = m.packet[2] as i32 - if flags & 0x20 != 0 { 256 } else { 0 };
-            m.x += dx;
-            m.y -= dy;
+            m.x += accel(dx);
+            m.y -= accel(dy);
             m.buttons = flags & 0x07;
         }
         _ => m.cycle = 0,
