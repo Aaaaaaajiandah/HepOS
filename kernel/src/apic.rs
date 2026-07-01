@@ -73,3 +73,13 @@ pub fn eoi() {
 }
 
 pub fn timer_vector() -> u8 { TIMER_VECTOR }
+
+/// Mask the APIC timer (stops preemptive scheduling).
+pub fn mask_timer() {
+    unsafe { wrmsr(X2APIC_LVT_TMR, rdmsr(X2APIC_LVT_TMR) | (1 << 16)); }
+}
+
+/// Unmask the APIC timer (resumes preemptive scheduling).
+pub fn unmask_timer() {
+    unsafe { wrmsr(X2APIC_LVT_TMR, rdmsr(X2APIC_LVT_TMR) & !(1 << 16)); }
+}

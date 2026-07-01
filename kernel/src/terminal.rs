@@ -253,7 +253,7 @@ impl Terminal {
             "help", "clear", "pwd", "ls", "cd", "cat", "mkdir", "touch",
             "rm", "cp", "mv", "write", "edit", "uname", "mem", "date",
             "history", "lspci", "netdiag", "netstart", "netpoll", "ifconfig",
-            "ping", "shutdown", "reboot", "echo", "sysinfo", "syscallinfo",
+            "ping", "shutdown", "reboot", "echo", "sysinfo", "syscallinfo", "runtest",
         ];
 
         let partial = self.cmd_buf.clone();
@@ -667,6 +667,16 @@ impl Terminal {
                 } else {
                     self.print_colored("BAR phys = 0, device not initialized by BIOS\n", ERR);
                 }
+            }
+
+            "runtest" => {
+                self.print_colored("Launching ring-3 test process...\n", OK);
+                let code = crate::process::run_test();
+                self.print(&alloc::format!(
+                    "Process exited with code {}.\n\
+                     (check serial/host terminal for ring-3 write output)\n",
+                    code
+                ));
             }
 
             "syscallinfo" => {

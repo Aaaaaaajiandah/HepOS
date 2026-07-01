@@ -207,24 +207,15 @@ fn sys_write(fd: u64, buf: u64, len: u64) -> u64 {
     count as u64
 }
 
-/// exit(code) — placeholder; logs and returns ENOSYS until we have real processes.
+/// exit(code) — terminates the running user process (if any) via longjmp,
+/// otherwise returns -ENOSYS.
 fn sys_exit(code: u64) -> u64 {
-    serial::print("syscall exit(");
-    // Print exit code to serial without allocating
-    let mut buf = [0u8; 20];
-    let s = fmt_u64(code, &mut buf);
-    serial::print(s);
-    serial::print(") — no process to exit yet\n");
-    ENOSYS as u64
+    if unsafe { crate::process::USER_RUNNING } {
+        unsafe { crate::process::do_exit(code) }
+        // do_exit is -> !, so this branch never reaches here; Rust knows it.
+    } else {
+        serial::print("sys_exit: no process running\n");
+        ENOSYS as u64
+    }
 }
 
-fn fmt_u64<'a>(mut n: u64, buf: &'a mut [u8; 20]) -> &'a str {
-    let mut i = 20usize;
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        if n == 0 { break; }
-    }
-    core::str::from_utf8(&buf[i..]).unwrap_or("?")
-}

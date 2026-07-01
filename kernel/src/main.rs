@@ -25,6 +25,7 @@ mod panic;
 mod pci;
 mod pmm;
 mod ps2;
+mod process;
 mod scheduler;
 mod serial;
 mod syscall;
