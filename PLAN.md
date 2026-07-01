@@ -292,8 +292,9 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ✓ | Serial debug (panic prints file:line:message) |
 | ✓ | Cross-platform build (build.rs, build.sh, build.ps1) |
 | ✓ | Slab allocator — 10 size classes (8B–4KB), large allocs via PMM, full dealloc |
-| ○ | Syscall gate (SYSCALL/SYSRET) |
-| ○ | Per-process page tables, TSS |
+| ✓ | Syscall gate — SYSCALL/SYSRET, SWAPGS, TSS RSP0, dispatcher (write/exit) |
+| ✓ | GDT: ring-3 code+data segments, 64-bit TSS descriptor, ltr |
+| ○ | Per-process page tables (PML4 per process, ring-3 pages) |
 
 ### Drivers
 | ✓/○ | Feature |
@@ -368,9 +369,9 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 ## Next Steps (Priority Order)
 
 1. **Networking RX on Linux/KVM** — confirm RTL8139/e1000 RX works there; if yes, QEMU/Windows is a known environment issue not a bug
-2. **Syscall interface** — SYSCALL/SYSRET gate, ring 3 entry/exit, basic `write`/`exit` syscalls
-4. **Per-process page tables + TSS** — isolated address spaces; prerequisite for real userspace
-5. **ELF loader** — parse and map ELF64 executables into a user process; run a hello-world binary
+2. **Per-process page tables** — separate PML4 per process, map user code/data pages at a low VA, ring-3 entry (IRETQ to ring 3)
+3. **ELF loader** — parse and map ELF64 into a user process; run a hello-world binary that calls write/exit
+4. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
 6. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
 7. **Intel HDA audio** — PCI enumerate, CORB/RIRB setup, play PCM; pair with a beep command
 8. **TCP/UDP stack** — build on existing ARP/IP layer; needed for any real networking app

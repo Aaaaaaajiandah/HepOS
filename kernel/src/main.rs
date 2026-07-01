@@ -27,6 +27,7 @@ mod pmm;
 mod ps2;
 mod scheduler;
 mod serial;
+mod syscall;
 mod terminal;
 mod vmm;
 
@@ -85,6 +86,8 @@ extern "C" fn kmain() -> ! {
         serial::print("Heap smoke test OK\n");
         let _ = v;
     }
+
+    syscall::init();
 
     let fb = FRAMEBUFFER_REQUEST
         .response()

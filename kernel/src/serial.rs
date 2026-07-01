@@ -32,10 +32,14 @@ pub fn print_hex(label: &str, val: u64) {
 
 pub fn print(s: &str) {
     for b in s.bytes() {
-        unsafe {
-            while inb(COM1 + 5) & 0x20 == 0 {}
-            outb(COM1, b);
-        }
+        write_byte(b);
+    }
+}
+
+pub fn write_byte(b: u8) {
+    unsafe {
+        while inb(COM1 + 5) & 0x20 == 0 {}
+        outb(COM1, b);
     }
 }
 
