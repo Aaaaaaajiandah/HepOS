@@ -323,7 +323,7 @@ Absolute range: 0–32767 → scaled to framebuffer resolution.
 | ✓ | Text editor: arrow nav, PgUp/Dn, Ctrl+Home/End, F2=save, F10=close |
 | ✓ | HepFS file manager: directory navigation, back/forward/path bar, click-to-open |
 | ✓ | Welcome window: system info, RAM, NVMe/HepFS status |
-| ○ | Ctrl+F find/replace in editor |
+| ✓ | Ctrl+F find in editor (highlight all matches, Enter/Ctrl+G=next, ESC=close) |
 | ○ | Multiple terminal windows |
 | ○ | Settings / system monitor window |
 | ○ | Image viewer (needs std shim) |
@@ -363,7 +363,7 @@ Absolute range: 0–32767 → scaled to framebuffer resolution.
 
 ## Next Steps (Priority Order)
 
-1. **Ctrl+F find in editor** — search forward through file, highlight match, Ctrl+G next
+1. ~~**Ctrl+F find in editor**~~ ✓ done
 2. **Terminal reflow on resize** — recalculate COLS from window width so terminal uses full width
 3. **RTL8139 / networking** — test on Linux/KVM; if confirmed working there, QEMU Windows is a known non-issue
 4. **Indirect blocks in HepFS** — one extra `indirect` pointer per inode unlocks files up to ~4MB
