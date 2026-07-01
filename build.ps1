@@ -1,6 +1,9 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 
+# Ensure cargo is on PATH (Rust installer adds it to user env, but not always to this session)
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+
 # ── 1. Build kernel ──────────────────────────────────────────────────────────
 Push-Location "$root\kernel"
 cargo +nightly build --release
