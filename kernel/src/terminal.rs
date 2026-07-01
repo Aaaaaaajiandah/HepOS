@@ -37,7 +37,9 @@ pub struct Terminal {
     row:         usize,
     pub dirty:   bool,
     cmd_buf:     String,
+    cmd_cursor:  usize,   // position within cmd_buf (0 = before first char)
     prompt_row:  usize,
+    prompt_col:  usize,   // column where user input starts (after the prompt text)
     // Shell state
     cwd_ino:     u32,
     cwd_path:    String,
@@ -56,7 +58,8 @@ impl Terminal {
         let mut t = Terminal {
             lines,
             col: 0, row: 0, dirty: true,
-            cmd_buf: String::new(), prompt_row: 0,
+            cmd_buf: String::new(), cmd_cursor: 0,
+            prompt_row: 0, prompt_col: 0,
             cwd_ino: crate::hepfs::ROOT_INO,
             cwd_path: String::from("/"),
             history: Vec::new(),
@@ -71,6 +74,8 @@ impl Terminal {
     fn show_prompt(&mut self) {
         self.print_colored(&alloc::format!("{} $ ", self.cwd_path), CURSOR);
         self.prompt_row = self.row;
+        self.prompt_col = self.col;
+        self.cmd_cursor = 0;
     }
 
     fn print_colored(&mut self, s: &str, color: Color) {
@@ -124,6 +129,7 @@ impl Terminal {
                 self.put_char(b'\n', TEXT);
                 let cmd = alloc::string::String::from(self.cmd_buf.trim());
                 self.cmd_buf.clear();
+                self.cmd_cursor = 0;
                 self.history_idx = None;
                 if !cmd.is_empty() {
                     self.history.push(cmd.clone());
@@ -132,12 +138,25 @@ impl Terminal {
                 self.execute(&cmd);
                 self.show_prompt();
             }
-            b'\x08' => { // backspace
-                if !self.cmd_buf.is_empty() {
-                    self.cmd_buf.pop();
+            b'\x08' => { // backspace — delete char before cursor
+                if self.cmd_cursor > 0 {
+                    self.cmd_buf.remove(self.cmd_cursor - 1);
+                    self.cmd_cursor -= 1;
                     if self.col > 0 { self.col -= 1; }
-                    self.lines[self.row][self.col] = Cell::blank();
+                    // Shift all cells from col leftward to close the gap
+                    let row = self.row;
+                    let c = self.col;
+                    for i in c..COLS - 1 { self.lines[row][i] = self.lines[row][i + 1]; }
+                    self.lines[row][COLS - 1] = Cell::blank();
                 }
+            }
+            b'\x01' => { // Ctrl+A — jump to start of input
+                self.col = self.prompt_col;
+                self.cmd_cursor = 0;
+            }
+            b'\x05' => { // Ctrl+E — jump to end of input
+                self.cmd_cursor = self.cmd_buf.len();
+                self.col = self.prompt_col + self.cmd_cursor;
             }
             b'\x03' => { // Ctrl+C — cancel current input
                 self.cmd_buf.clear();
@@ -178,10 +197,35 @@ impl Terminal {
                     }
                 }
             }
+            ps2::KEY_LEFT => { // move cursor left within input
+                if self.cmd_cursor > 0 {
+                    self.cmd_cursor -= 1;
+                    self.col -= 1;
+                }
+            }
+            ps2::KEY_RIGHT => { // move cursor right within input
+                if self.cmd_cursor < self.cmd_buf.len() {
+                    self.cmd_cursor += 1;
+                    self.col += 1;
+                }
+            }
             ch if ch >= 32 => {
                 if self.cmd_buf.len() < COLS - 2 {
-                    self.cmd_buf.push(ch as char);
-                    self.put_char(ch, TEXT);
+                    if self.cmd_cursor == self.cmd_buf.len() {
+                        // At end — just append
+                        self.cmd_buf.push(ch as char);
+                        self.put_char(ch, TEXT);
+                        self.cmd_cursor += 1;
+                    } else {
+                        // Mid-line — insert and shift cells right
+                        self.cmd_buf.insert(self.cmd_cursor, ch as char);
+                        let row = self.row;
+                        let c = self.col;
+                        for i in (c..COLS - 1).rev() { self.lines[row][i + 1] = self.lines[row][i]; }
+                        self.lines[row][c] = Cell { ch, color: TEXT };
+                        self.col += 1;
+                        self.cmd_cursor += 1;
+                    }
                 }
             }
             _ => {}
@@ -190,18 +234,17 @@ impl Terminal {
     }
 
     fn replace_input(&mut self, new: &str) {
-        // Erase current input on this row back to prompt end
-        while self.col > 0 && self.cmd_buf.len() > 0 {
-            self.cmd_buf.pop();
-            self.col -= 1;
-            self.lines[self.row][self.col] = Cell::blank();
-        }
-        // Also handle if cmd_buf had more chars than shown
+        // Erase entire current input by blanking the cells from prompt_col
+        let row = self.prompt_row;
+        let end = self.prompt_col + self.cmd_buf.len();
+        for c in self.prompt_col..end.min(COLS) { self.lines[row][c] = Cell::blank(); }
+        self.col = self.prompt_col;
         self.cmd_buf.clear();
-        // Redraw from prompt start
+        self.cmd_cursor = 0;
         for ch in new.bytes() {
             self.cmd_buf.push(ch as char);
             self.put_char(ch, TEXT);
+            self.cmd_cursor += 1;
         }
     }
 
@@ -255,12 +298,14 @@ impl Terminal {
                 }
                 self.print_colored("\n", DIM);
                 self.cmd_buf.clear();
+                self.cmd_cursor = 0;
                 self.show_prompt();
                 // Re-show what the user had typed
                 let p = partial.clone();
                 for ch in p.bytes() {
                     self.cmd_buf.push(ch as char);
                     self.put_char(ch, TEXT);
+                    self.cmd_cursor += 1;
                 }
             }
         }
