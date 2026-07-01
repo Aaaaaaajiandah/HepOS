@@ -1,4 +1,4 @@
-# HepOS — Complete Design Reference
+# HepOS — Design Reference & Roadmap
 
 > **Purpose:** Authoritative reference for HepOS. Survives context compaction.
 > **Last updated:** 2026-06-30
@@ -11,7 +11,7 @@ HepOS is a custom x86\_64 operating system written in Rust using an **exokernel 
 
 **Language:** Rust (nightly, `no_std` + `alloc`)  
 **Target:** x86\_64, bare metal  
-**Bootloader:** Limine v9.x (BIOS mode)  
+**Bootloader:** Limine v9.x (BIOS + UEFI)  
 **Dev machine:** Windows 11, QEMU 11.x  
 **License:** MIT  
 **Repository:** https://github.com/The-Hep-Group/HepOS
@@ -21,41 +21,55 @@ HepOS is a custom x86\_64 operating system written in Rust using an **exokernel 
 ## Source Files
 
 ```
-kernel/src/
-  main.rs        kmain entry, global state, task setup, window+HepFS rendering
-  framebuffer.rs GOP pixel/rect/text renderer (8×8 bitmap font, LSB-first)
-  gdt.rs         GDT (null, code64, data64)
-  idt.rs         IDT, exception stubs, timer_stub
-  pmm.rs         Bitmap PMM (pages above 1MB only, alloc_contiguous)
-  vmm.rs         HHDM offset, phys_to_virt
-  paging.rs      PML4 walker, map_page, map_mmio (NOCACHE)
-  heap.rs        Bump allocator 1MB, GlobalAlloc, no-free
-  apic.rs        x2APIC (MSR), 10ms timer, disables 8259 PIC
-  acpi.rs        ACPI shutdown (port 0x604) + PS/2 reboot
-  rtc.rs         CMOS RTC: now(), fmt_time(), fmt_date()
-  scheduler.rs   Round-robin preemptive, context_switch (naked asm)
-  pci.rs         Config-space scan (0xCF8/0xCFC), enumerate()
-  ps2.rs         PS/2 kbd: scancode set 1 + extended (0xE0) + shift/caps/ctrl/PgUp/PgDn
-  mouse.rs       PS/2 AUX mouse (3-byte packets, relative, AUX port)
-  xhci.rs        XHCI USB host controller — USB HID tablet, absolute mouse coords
-  nvme.rs        NVMe driver, admin+IO queues, global CONTROLLER
-  hepfs.rs       HepFS: flat inode, 4KB blocks, NVMe backend
-  desktop.rs     Compositor, WM, start menu, taskbar, resize handles, RTC clock
-  terminal.rs    Full shell: pwd/cd/ls/cat/mkdir/rm/cp/mv/write/edit/ping/tab-complete/...
-  editor.rs      Text editor: arrow nav, PgUp/Dn, Ctrl+Home/End, F2=save, F10=close
-  net.rs         ARP, ICMP, eth_send, ping (bypasses ARP, uses SLiRP MAC)
-  e1000.rs       Intel 82540EM driver (TX works, RX pending)
-  rtl8139.rs     RTL8139 driver (flat ring, TX works, RX broken on QEMU Windows)
-  virtio_net.rs  virtio-net legacy (incomplete)
-  serial.rs      COM1 debug: print, print_hex
-  panic.rs       Prints file:line:message to serial, then spins
+kernel/
+  build.rs       Emits linker script path via CARGO_MANIFEST_DIR (cross-platform)
+  linker.ld      Custom linker script (Limine protocol sections)
+  src/
+    main.rs        kmain entry, global state, task_blink, window rendering, HepFS click handler
+    framebuffer.rs GOP pixel/rect/text renderer (8×8 bitmap font, LSB-first)
+    gdt.rs         GDT (null, code64, data64)
+    idt.rs         IDT, exception stubs, timer_stub
+    pmm.rs         Bitmap PMM (pages above 1MB only, alloc_contiguous)
+    vmm.rs         HHDM offset, phys_to_virt
+    paging.rs      PML4 walker, map_page, map_mmio (NOCACHE)
+    heap.rs        Bump allocator 1MB, GlobalAlloc, no-free
+    apic.rs        x2APIC (MSR), 10ms timer, disables 8259 PIC
+    acpi.rs        ACPI shutdown (port 0x604) + PS/2 reboot
+    rtc.rs         CMOS RTC: now(), fmt_time(), fmt_date()
+    scheduler.rs   Round-robin preemptive, context_switch (naked asm)
+    pci.rs         Config-space scan (0xCF8/0xCFC), enumerate()
+    ps2.rs         PS/2 kbd: scancode set 1 + extended (0xE0) + shift/caps/ctrl/PgUp/PgDn
+    mouse.rs       PS/2 AUX mouse (3-byte packets, relative, AUX port)
+    xhci.rs        XHCI USB host controller — USB HID tablet, absolute mouse coords
+    nvme.rs        NVMe driver, admin+IO queues, global CONTROLLER
+    hepfs.rs       HepFS: flat inode, 4KB blocks, 12 direct + 1 indirect block per file
+    desktop.rs     Compositor, WM, start menu, taskbar, resize handles, RTC clock
+    terminal.rs    Full shell: history, left/right cursor, tab completion, 30+ commands
+    editor.rs      Text editor: Ctrl+F find, PgUp/Dn, Ctrl+Home/End, F2=save, F10=close
+    net.rs         ARP, ICMP, eth_send, ping (bypasses ARP, uses SLiRP MAC)
+    e1000.rs       Intel 82540EM driver (TX works, RX pending)
+    rtl8139.rs     RTL8139 driver (flat ring, TX works, RX broken on QEMU Windows)
+    virtio_net.rs  virtio-net legacy (incomplete)
+    serial.rs      COM1 debug: print, print_hex
+    panic.rs       Prints file:line:message to serial, then spins
+
+bootloader/
+  limine.conf    Boot entry: timeout 0, loads /boot/hepos-kernel
+
+limine/          Limine v9.x binary release (committed to repo)
+  limine.exe     Windows installer tool
+  limine.c       Installer source (compiled on Linux by build.sh via make)
+  limine-bios.sys, limine-bios-cd.bin, limine-uefi-cd.bin, BOOTX64.EFI
+
+build.ps1        Windows: build + ISO + QEMU launch
+build.sh         Linux:   build + ISO + QEMU launch
 ```
 
 ---
 
 ## QEMU Command
 
-```powershell
+```
 qemu-system-x86_64
   -M q35
   -cpu qemu64,+x2apic      # x2APIC via MSR
@@ -66,7 +80,7 @@ qemu-system-x86_64
   -device nvme,serial=heposv1,drive=nvme0
   -netdev user,id=net0
   -device rtl8139,netdev=net0
-  -device qemu-xhci,id=xhci         # XHCI USB host controller
+  -device qemu-xhci,id=xhci
   -device usb-tablet,bus=xhci.0     # absolute mouse via USB HID
   -vga std
   -display sdl,window-close=off
@@ -85,71 +99,83 @@ Limine → kmain()
  2. VMM (HHDM offset), PMM (pages >1MB)
  3. Heap (bump, 256 PMM pages = 1MB)
  4. Display + splash screen
- 5. Desktop + windows created (before sti)
- 6. Terminal init + HepFS navigator state (before sti)
+ 5. Desktop + all windows created (ids 0-4, editor+sysmon minimized)
+ 6. Terminal init + HepFS navigator state
  7. PCI enumerate
  8. NVMe init → HepFS mount/format → write /kernel.txt
- 9. Networking init (RTL8139 → e1000 → virtio fallbacks)
+ 9. Networking init (RTL8139 → e1000 fallback)
 10. PS/2 keyboard + mouse init
 11. XHCI USB init (finds usb-tablet, sets up HID ring)
-12. Scheduler (2 tasks: idle, task_blink) + APIC timer
-13. sti → first timer tick switches to task_blink
+12. Scheduler (2 tasks: idle, task_blink) + APIC timer   ← MUST be last
+13. sti → first timer tick context-switches kmain → task_blink
 14. task_blink loops forever (input poll + render)
 ```
 
-**Critical ordering:** APIC timer and scheduler MUST start last, after all device init.
-The first timer tick context-switches kmain → task_blink. If APIC starts early,
-task_blink runs before XHCI/networking are initialized.
+**Critical:** APIC timer starts last. The first tick switches to task_blink; if APIC starts early, task_blink runs before XHCI/NVMe are ready.
 
 ---
 
 ## Focus System
 
 - **Default:** Terminal focused (`FOCUSED_WIN = Some(2)`), all keys → terminal
-- **Mouse click on window:** brings it to front AND syncs keyboard focus to it
-- **Editor close (ESC/F10/Ctrl+Q):** focus returns to terminal
+- **Mouse click on window:** brings it to front AND syncs keyboard focus (`FOCUSED_WIN = Some(id)`)
+- **Editor close (ESC / F10 / Ctrl+Q):** focus returns to terminal (`Some(2)`)
 - **Ctrl+C in terminal:** cancel current input, show `^C`
 
-> Cursor mode (ESC → WASD + Space) has been removed — mouse handles all navigation.
+Key routing in task_blink:
+- `FOCUSED_WIN == Some(3)` → editor gets all keys
+- anything else → terminal gets all keys
 
 ---
 
-## Desktop Windows (IDs)
+## Desktop Windows
 
-| ID | Title | Content |
-|----|-------|---------|
-| 0 | Welcome to HepOS | System info, RAM, NVMe/HepFS status |
-| 1 | HepFS | File manager with directory navigation, back/forward, path bar |
-| 2 | Terminal | Full interactive shell with tab completion |
-| 3 | Editor | Text editor (opens with `edit <file>` or clicking a file in HepFS) |
+| ID | Title | Default | Content |
+|----|-------|---------|---------|
+| 0 | Welcome to HepOS | open | System info, RAM, NVMe/HepFS status |
+| 1 | HepFS | open | File manager: back/forward/path bar, directory navigation |
+| 2 | Terminal | open | Full interactive shell |
+| 3 | Editor | minimized | Text editor — opened by `edit <file>` or clicking a file in HepFS |
+| 4 | Sysmon | minimized | RAM bar, uptime, PCI list, storage/net status |
 
-All windows support:
+All windows:
 - **Drag** title bar to move
-- **Drag** bottom-right resize handle to resize (min 120×60)
-- **Close** (×) button to minimize to taskbar
+- **Drag** bottom-right corner handle to resize (min 120×60)
+- **× button** minimizes to taskbar
 
 ---
 
 ## Taskbar & Start Menu
 
-- **Start button** (left): opens a popup listing ALL programs regardless of state
-  - Click any program to un-minimize and focus it
-  - Minimized programs show `--` badge
-- **Window buttons** (right of start): only OPEN (non-minimized) windows shown
-  - Click focused window's button to minimize it
-  - Click another window's button to focus it
+- **HepOS button** (left): popup listing ALL programs regardless of state; click to open/focus
+- **Window buttons**: only non-minimized windows shown; click focused → minimize, click other → focus
 - **Clock** (far right): live RTC time
 
 ---
 
-## Terminal Shell Commands
+## Terminal
 
+### Key Bindings
+| Key | Action |
+|-----|--------|
+| `←` / `→` | Move cursor within current input |
+| `↑` / `↓` | History prev / next |
+| `Ctrl+P` / `Ctrl+N` | History prev / next (alternative) |
+| `Ctrl+A` / `Ctrl+E` | Jump to start / end of input |
+| `Ctrl+C` | Cancel input |
+| `Ctrl+L` / `Ctrl+K` | Clear screen |
+| `Tab` | Complete command name or filename |
+| `Backspace` | Delete char before cursor |
+
+Terminal column count adapts to window width dynamically (up to 120 cols max).
+
+### Commands
 | Command | Description |
 |---------|-------------|
 | `help` | List all commands |
 | `pwd` | Print working directory |
 | `ls [path]` | List directory |
-| `cd <dir>` | Change dir (`..` and `/` supported) |
+| `cd <dir>` | Change directory (`..` and `/` supported) |
 | `cat <file>` | Print file contents |
 | `mkdir <name>` | Create directory |
 | `touch <name>` | Create empty file |
@@ -159,249 +185,230 @@ All windows support:
 | `write <file> <text>` | Write text to file |
 | `edit <file>` | Open text editor |
 | `history` | Show command history |
-| `↑/↓` arrows | Navigate history (Ctrl+P/N also work) |
-| `Tab` | Tab completion (commands and filenames) |
-| `date` | Current date+time (RTC) |
+| `date` | Current date + time (RTC) |
 | `sysinfo` | Full kernel info |
-| `uname` / `mem` | System info / memory usage |
-| `lspci` | List all PCI devices with vendor:device IDs |
-| `netdiag` | e1000 register dump |
-| `netstart` | Force-init e1000 NIC |
-| `netpoll` | Scan RX descriptors |
-| `ifconfig` | Show IP/MAC/GW |
-| `ping <ip>` | ICMP echo (hardcoded SLiRP MAC) |
-| `shutdown` / `reboot` | ACPI power off / PS/2 reset |
-| `echo <text>` / `clear` | Print text / clear screen |
-| `Ctrl+L` / `Ctrl+K` | Clear screen |
-| `Ctrl+A` / `Ctrl+E` | Jump to start/end of input |
-| `Ctrl+C` | Cancel current input |
-
-### Tab Completion Details
-- **No space yet:** completes command name (`cat<Tab>` → `cat `)
-- **After space:** completes filename from cwd (`cat he<Tab>` → `cat hello.txt `)
-- **Single match:** auto-completes in place with trailing space
-- **Multiple matches:** prints all options on a new line, re-shows prompt + partial input
+| `uname` / `mem` | System / memory info |
+| `lspci` | List all PCI devices |
+| `ifconfig` | IP / MAC / gateway |
+| `ping <ip>` | ICMP echo |
+| `netstart` / `netdiag` / `netpoll` | NIC debug commands |
+| `shutdown` / `reboot` | ACPI off / PS/2 reset |
+| `echo` / `clear` | Print text / clear screen |
 
 ---
 
-## Text Editor Controls
+## Text Editor
 
 | Key | Action |
 |-----|--------|
 | Arrow keys | Move cursor |
-| Home / End | Line start / end |
-| Ctrl+Home | Jump to file start |
-| Ctrl+End | Jump to file end |
-| Page Up / Page Down | Scroll one screen |
-| Enter | Insert newline (splits line) |
-| Backspace / Delete | Delete character |
-| Tab | Insert 4 spaces |
-| F2 / Ctrl+S | Save file |
-| F10 / Ctrl+Q / ESC | Close (warns if unsaved) |
+| `Home` / `End` | Line start / end |
+| `Ctrl+Home` / `Ctrl+End` | File start / end |
+| `PgUp` / `PgDn` | Scroll one screen |
+| `Enter` | Insert newline |
+| `Backspace` / `Delete` | Delete character |
+| `Tab` | Insert 4 spaces |
+| `Ctrl+F` | Enter find mode |
+| (in find mode) type | Update search query live |
+| (in find mode) `Enter` / `Ctrl+G` | Next match |
+| (in find mode) `ESC` | Exit find mode |
+| `F2` / `Ctrl+S` | Save |
+| `F10` / `Ctrl+Q` | Close (warns if unsaved; second press force-closes) |
 
-Display: line numbers, current-line highlight, cursor underline, file name + modified indicator, line:col status bar.
-
----
-
-## HepFS File Manager Window
-
-- **Nav bar** at top: `[<] [>] /path/here`
-  - `<` back: navigate to previous directory
-  - `>` forward: navigate forward after going back
-  - Path bar shows current path (truncated from left if too long)
-- **File list:**
-  - `d` prefix (blue) for directories, `f` prefix (white) for files
-  - File sizes shown on the right
-  - `..` entry at top when not in root — click to go up
-- **Click a directory** → navigate into it (pushes history)
-- **Click a file** → opens it in the editor window
+Find mode: highlights all matches (blue bg), current match (yellow bg), shows `[N/M]` count in status bar.
 
 ---
 
-## HepFS Layout
+## HepFS File Manager
+
+- **Nav bar:** `[<] [>] /current/path` — back / forward / path display
+- **File list:** `d` (blue) = directory, `f` (white) = file, sizes on right
+- `..` entry shown when not at root — click to go up
+- Click directory → navigate in (pushes back history)
+- Click file → open in editor
+
+---
+
+## HepFS Filesystem
 
 ```
-Block 0      : Superblock (magic 0x48657046_53000001)
-Block 1      : Inode bitmap
-Blocks 2-5   : Block bitmap
-Blocks 6-37  : Inode table (1024 inodes × 128 bytes)
-Blocks 38+   : Data blocks (4KB each)
+Block 0      : Superblock  (magic 0x48657046_53000001)
+Block 1      : Inode bitmap (32768 bits)
+Blocks 2–5   : Block bitmap (131072 bits)
+Blocks 6–37  : Inode table  (1024 inodes × 128 bytes each)
+Blocks 38+   : Data blocks  (4KB each)
 ```
-Max file size: 12 × 4KB = 49KB (direct blocks only)  
-`/kernel.txt` written at every boot (kernel manifest)
+
+**Inode layout (128 bytes):**
+- `flags` (file/dir/free), `size`, `nblocks`, `ctime`, `mtime`
+- `direct[12]` — 12 × 4KB = 48KB direct
+- `indirect` — points to a block of 1024 × u32 pointers → 1024 × 4KB = 4MB indirect
+- **Max file size: ~4.1MB** (48KB + 4MB)
+
+`/kernel.txt` written at every boot as a kernel manifest.
 
 ---
 
 ## XHCI USB Mouse Driver
 
-**Device:** QEMU `qemu-xhci` (PCI 1B36:000D) + `usb-tablet` (USB HID, absolute coordinates)
+**Device:** QEMU `qemu-xhci` (PCI 1B36:000D) + `usb-tablet` (absolute coordinates)
 
-**USB HID report format (6 bytes):**
-```
-[0] buttons   [1] x_lo  [2] x_hi  [3] y_lo  [4] y_hi  [5] wheel
-```
-Absolute range: 0–32767 → scaled to framebuffer resolution.
+**USB HID report (6 bytes):** `[buttons] [x_lo] [x_hi] [y_lo] [y_hi] [wheel]`  
+Range 0–32767 scaled to framebuffer size.
 
-**Key implementation details:**
-- Link TRB TC bit must ALWAYS be 1 (not just on odd wraps) — fixes ring desync after 2nd wrap
-- Filter out `(x=0, y=0, buttons=0)` reports — initial garbage before mouse enters QEMU window
-- Port speed read from PORTSC bits[13:10] after reset (don't hardcode USB2)
-- Sequence: Enable Slot → Address Device → SET_CONFIGURATION → Configure Endpoint → queue HID TRBs → poll
+**Key gotchas:**
+- Link TRB TC bit must be 1 on EVERY ring wrap (not just odd ones) — else ring desyncs after wrap 2
+- Filter `(x=0, y=0, btn=0)` reports — garbage before QEMU window is focused
+- Read port speed from PORTSC bits[13:10] after reset — don't hardcode USB2
 
 ---
 
-## Networking Status
+## Networking
 
-**Architecture:** Ethernet → ARP/IP → ICMP  
-**Stack:** hand-written (no smoltcp), in `net.rs`  
-**Static IP:** 10.0.2.15, GW: 10.0.2.2, mask: 255.255.255.0
+**Stack:** `net.rs` — hand-written Ethernet → ARP → IP → ICMP (no smoltcp)  
+**Static config:** IP 10.0.2.15, GW 10.0.2.2, mask 255.255.255.0
 
-| Driver | Status | Notes |
-|--------|--------|-------|
-| virtio-net | ✗ not found | PCI vendor 0x1AF4 not detected in QEMU |
-| e1000 (82540EM) | ⚠ TX only | TDH advances, correct data, SLiRP not responding on Win |
-| rtl8139 | ⚠ TX only | Simpler flat ring, same QEMU Windows SLiRP issue |
+| Driver | TX | RX | Notes |
+|--------|----|----|-------|
+| RTL8139 | ✓ | ✗ | SLiRP RX broken on QEMU/Windows |
+| e1000 | ✓ | ✗ | Same issue |
+| virtio-net | ✗ | ✗ | Not detected |
 
-**Root cause:** QEMU on Windows with SLiRP — TX is correct (MAC/size verified) but packets never reach SLiRP. Works on Linux/KVM. Not a driver bug.
-
-**Workaround:** `netstart` force-inits e1000. `ping 10.0.2.2` shows "timeout" (TX works, RX broken).
+RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver bug.
 
 ---
 
-## What's Built ✓ vs Left ○
+## What's Built
 
-### Kernel
-| Status | Feature |
-|--------|---------|
-| ✓ | Boot/Limine, Framebuffer, GDT, IDT |
-| ✓ | PMM (>1MB only), HHDM, Paging |
-| ✓ | Bump heap, x2APIC, ACPI, RTC |
-| ✓ | Preemptive scheduler, PCI enumeration |
-| ✓ | Panic handler prints file:line:message to serial |
-| ○ | Syscall interface (SYSCALL/SYSRET) |
-| ○ | Per-process paging, TSS |
-| ○ | Slab allocator (bump heap cannot free) |
+### Kernel / Low-level
+| ✓/○ | Feature |
+|-----|---------|
+| ✓ | Boot (Limine), Framebuffer, GDT, IDT |
+| ✓ | PMM (bitmap, >1MB), HHDM, Paging |
+| ✓ | Bump heap (1MB), GlobalAlloc |
+| ✓ | x2APIC timer, ACPI shutdown/reboot, CMOS RTC |
+| ✓ | Preemptive round-robin scheduler (naked-asm context switch) |
+| ✓ | PCI config-space enumeration |
+| ✓ | Serial debug (panic prints file:line:message) |
+| ✓ | Cross-platform build (build.rs, build.sh, build.ps1) |
+| ○ | Syscall gate (SYSCALL/SYSRET) |
+| ○ | Per-process page tables, TSS |
+| ○ | Slab / free-list allocator (bump can't free) |
 
-### Input / Drivers
-| Status | Feature |
-|--------|---------|
-| ✓ | PS/2 keyboard (shift, caps, ctrl, arrows, F-keys, PgUp/PgDn) |
-| ✓ | PS/2 mouse (relative, driver works; QEMU SDL doesn't route to AUX) |
-| ✓ | XHCI USB host controller + USB HID tablet (absolute mouse coords) |
-| ✓ | NVMe (admin+IO queues, hardcoded 512B block size) |
-| ✓ | PCI enumeration |
+### Drivers
+| ✓/○ | Feature |
+|-----|---------|
+| ✓ | PS/2 keyboard — full scancode set 1, extended, all modifiers |
+| ✓ | XHCI USB host controller + USB HID tablet (absolute mouse) |
+| ✓ | NVMe — admin + IO queues |
+| ✓ | RTL8139 NIC — TX only |
+| ✓ | e1000 NIC — TX only |
+| ○ | Networking RX (works on Linux/KVM, broken on QEMU/Windows SLiRP) |
 | ○ | Intel HDA audio |
-| ○ | RTL8169 (user's real NIC on hardware) |
-| ○ | ACPI full (FADT parsing for real hardware — currently hardcoded QEMU port) |
+| ○ | ACPI FADT parsing (for real hardware shutdown) |
 
 ### Storage
-| Status | Feature |
-|--------|---------|
-| ✓ | HepFS: format, probe, create/read/write/delete files+dirs |
-| ✓ | Path resolution, kernel manifest (`/kernel.txt`) |
-| ✓ | `cp` / `mv` commands |
-| ✓ | Large files up to ~4.1MB (12 direct + 1024 indirect blocks) |
-| ○ | VFS layer |
+| ✓/○ | Feature |
+|-----|---------|
+| ✓ | HepFS: format, probe, create/read/write/delete files + dirs |
+| ✓ | Path resolution (`/a/b/c`), kernel manifest `/kernel.txt` |
+| ✓ | Indirect blocks — files up to ~4.1MB |
+| ✓ | `cp`, `mv` terminal commands |
+| ○ | Double-indirect blocks (files up to ~4GB) |
+| ○ | VFS abstraction layer |
 
 ### Desktop / WM
-| Status | Feature |
-|--------|---------|
-| ✓ | Compositor with correct z-order (chrome + content rendered together per window) |
-| ✓ | Floating WM: drag to move, close button (minimizes to taskbar) |
-| ✓ | Window resize: drag bottom-right corner, min 120×60 |
-| ✓ | Start menu (all programs), taskbar shows only open windows |
-| ✓ | Focus system: mouse click syncs both visual + keyboard focus |
-| ✓ | Live RTC clock on taskbar |
+| ✓/○ | Feature |
+|-----|---------|
+| ✓ | Floating compositor — correct z-order, chrome+content per window |
+| ✓ | Drag-to-move, drag-to-resize (bottom-right handle, min 120×60) |
+| ✓ | Close button minimizes to taskbar |
+| ✓ | Start menu (all programs) + taskbar (open windows only) + live clock |
+| ✓ | Mouse click syncs visual + keyboard focus |
+| ○ | Window maximize / snap to half-screen |
 | ○ | Desktop icons / wallpaper |
-| ○ | Multiple instances of same app |
-| ○ | Window maximize / snap |
+| ○ | Multiple instances of the same app |
 
 ### Apps
-| Status | Feature |
-|--------|---------|
-| ✓ | Terminal: full shell, history, arrow nav, Ctrl+C/L, tab completion |
-| ✓ | Text editor: arrow nav, PgUp/Dn, Ctrl+Home/End, F2=save, F10=close |
-| ✓ | HepFS file manager: directory navigation, back/forward/path bar, click-to-open |
-| ✓ | Welcome window: system info, RAM, NVMe/HepFS status |
-| ✓ | Ctrl+F find in editor (highlight all matches, Enter/Ctrl+G=next, ESC=close) |
+| ✓/○ | Feature |
+|-----|---------|
+| ✓ | Terminal — 30+ commands, history, left/right cursor, tab completion, dynamic width |
+| ✓ | Text editor — Ctrl+F find, PgUp/Dn, Ctrl+Home/End, F2/F10 |
+| ✓ | HepFS file manager — back/forward/path bar, click-to-navigate, click-to-open |
+| ✓ | Welcome window — system info |
+| ✓ | Sysmon window — RAM bar, uptime, PCI list, storage/net status |
 | ○ | Multiple terminal windows |
-| ✓ | Sysmon window — RAM bar, uptime, NVMe/net status, PCI device list |
-| ○ | Image viewer (needs std shim) |
+| ○ | Image viewer |
+| ○ | Audio player |
+| ○ | Settings panel |
 
-### Networking
-| Status | Feature |
-|--------|---------|
+### Networking / Ecosystem
+| ✓/○ | Feature |
+|-----|---------|
 | ✓ | ARP, ICMP, IP checksum, eth_send |
-| ✓ | e1000 TX works (TDH advances, data correct) |
-| ⚠ | RX broken on QEMU Windows (SLiRP issue, not driver bug) |
-| ○ | Working ping end-to-end |
-| ○ | TCP/UDP stack |
+| ○ | Working RX (Linux/KVM only right now) |
+| ○ | TCP / UDP stack |
 | ○ | DNS, HTTP client |
-
-### LibOS / Ecosystem
-| Status | Feature |
-|--------|---------|
-| ○ | `std` shim → unlock Rust crates (image, audio, etc.) |
-| ○ | PNG/JPG rendering (needs std shim) |
-| ○ | MP3/FLAC audio via Symphonia (needs std shim + HDA) |
-| ○ | Userspace (ring 3, syscalls, ELF loader) |
+| ○ | `std` shim → unlock Rust crates |
+| ○ | Userspace — ring 3, ELF loader, syscalls |
 
 ---
 
 ## Known Issues
 
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| Networking RX broken on QEMU Win | SLiRP/QEMU Windows path — not a driver bug | Test on Linux/KVM |
-| Heap can't free | Bump allocator by design | Slab allocator (future) |
-| NVMe reports 0 MB | Identify Namespace CMD hangs | Hardcoded 512B workaround |
-| Files max 49KB | Only 12 direct blocks in inode | Add indirect block pointer |
-| ACPI only on QEMU | Hardcoded port 0x604 (QEMU PIIX4) | Parse FADT for real hardware |
-| Terminal wraps at 30 cols | COLS=30 constant | Reflow on window resize |
+| Issue | Status |
+|-------|--------|
+| Network RX broken on QEMU/Windows | SLiRP path issue — TX works fine; RX works on Linux/KVM |
+| Heap cannot free memory | Bump allocator by design — slab allocator needed |
+| NVMe size reported as 0 MB | Identify Namespace command hangs; workaround: hardcoded 512B/block |
+| ACPI shutdown only on QEMU | Hardcoded port 0x604 — real hardware needs FADT parsing |
+| Terminal text doesn't reflow on resize | Existing output stays at old column width; new input uses current width |
 
 ---
 
 ## Next Steps (Priority Order)
 
-1. ~~**Ctrl+F find in editor**~~ ✓ done
-2. ~~**Terminal reflow on resize**~~ ✓ done
-3. **RTL8139 / networking** — test on Linux/KVM; if confirmed working there, QEMU Windows is a known non-issue
-4. ~~**Indirect blocks in HepFS**~~ ✓ done
-5. ~~**Settings / sysmon window**~~ ✓ done
-6. **std shim** — implement enough of `std` (alloc, io, fs) to link external Rust crates
-7. **Intel HDA audio** — enumerate HDA via PCI, play PCM samples; pair with a simple beep/music app
-8. **Userspace / ring 3** — SYSCALL/SYSRET gate, per-process page tables, ELF loader, basic shell process
-9. **Slab allocator** — replace bump heap; needed before userspace can fork/spawn reasonably
-10. **RTL8169 NIC** — for use on real hardware (user's actual NIC)
+1. **Networking RX on Linux/KVM** — confirm RTL8139/e1000 RX works there; if yes, QEMU/Windows is a known environment issue not a bug
+2. **Slab allocator** — replace bump heap with a free-list so memory can be reclaimed; required before userspace is safe
+3. **Syscall interface** — SYSCALL/SYSRET gate, ring 3 entry/exit, basic `write`/`exit` syscalls
+4. **Per-process page tables + TSS** — isolated address spaces; prerequisite for real userspace
+5. **ELF loader** — parse and map ELF64 executables into a user process; run a hello-world binary
+6. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
+7. **Intel HDA audio** — PCI enumerate, CORB/RIRB setup, play PCM; pair with a beep command
+8. **TCP/UDP stack** — build on existing ARP/IP layer; needed for any real networking app
+9. **Window maximize / snap** — double-click title bar to maximize; drag to screen edge to snap half
+10. **Multiple terminal windows** — allow spawning a second terminal from start menu
+11. **Desktop icons** — clickable icons on the desktop background for each app
+12. **RTL8169 / real hardware NIC** — for running on physical machines
 
 ---
 
-## Key Global State (main.rs)
+## Key Global State
 
 ```rust
-pub static DISPLAY:      Mutex<Option<Display>>          // GOP framebuffer
-pub static FOCUSED_WIN:  Mutex<Option<usize>>            // None=cursor mode, Some(id)=focused window
-pub static PCI_DEVS:     Mutex<Vec<PciDevice>>           // for lspci command
-static     HEPFS_NAV:    Mutex<Option<HepfsNav>>         // HepFS window navigator state
-// In other modules:
-desktop::DESKTOP         Mutex<Option<Desktop>>          // window manager, z-order, focus
-nvme::CONTROLLER         Mutex<Option<NvmeController>>   // global NVMe
-e1000::NIC               Mutex<Option<E1000>>
-rtl8139::NIC             Mutex<Option<Rtl8139>>
-terminal::TERMINAL       Mutex<Option<Terminal>>
-editor::EDITOR           Mutex<Option<Editor>>
-xhci::XHCI_STATE        (module-internal, polled each frame)
-scheduler::SCHEDULER     Mutex<Scheduler>
-mouse::MOUSE             Mutex<Mouse>                    // shared x/y/buttons
+// main.rs
+pub static DISPLAY:        Mutex<Option<Display>>       // GOP framebuffer
+pub static FOCUSED_WIN:    Mutex<Option<usize>>         // Some(id) = focused window
+pub static PCI_DEVS:       Mutex<Vec<PciDevice>>        // populated at boot, used by lspci + sysmon
+static     HEPFS_NAV:      Mutex<Option<HepfsNav>>      // HepFS navigator: ino, path, back[], fwd[]
+static     UPTIME_FRAMES:  AtomicU64                    // incremented each frame (~60fps)
+
+// Other modules
+desktop::DESKTOP           Mutex<Option<Desktop>>       // WM state, windows, z-order, dirty flag
+nvme::CONTROLLER           Mutex<Option<NvmeController>>
+e1000::NIC / rtl8139::NIC  Mutex<Option<...>>
+terminal::TERMINAL         Mutex<Option<Terminal>>
+editor::EDITOR             Mutex<Option<Editor>>
+scheduler::SCHEDULER       Mutex<Scheduler>
+mouse::MOUSE               Mutex<Mouse>                 // x, y, buttons — written by XHCI + PS/2
 ```
 
-### HepfsNav (in main.rs)
 ```rust
 struct HepfsNav {
-    ino:  u32,          // current directory inode
-    path: String,       // display path e.g. "/home"
-    back: Vec<(u32, String)>,   // back navigation stack
-    fwd:  Vec<(u32, String)>,   // forward navigation stack
+    ino:  u32,                        // current directory inode
+    path: String,                     // display path e.g. "/home"
+    back: Vec<(u32, String)>,         // back navigation stack
+    fwd:  Vec<(u32, String)>,         // forward navigation stack
 }
 ```
 
@@ -409,97 +416,99 @@ struct HepfsNav {
 
 ## Render Loop (task_blink)
 
-Runs forever, renders at ~60fps when dirty:
 ```
-1.  poll ps2 + mouse + XHCI (sets mouse::MOUSE x/y/buttons)
-2.  route keys:
-      ESC (not editor) → cursor mode (FOCUSED_WIN = None)
-      focused=Some(3)  → editor.on_key()
-      focused=Some(_)  → terminal.on_key()
-      None (cursor)    → WASD move cursor, Space = click
-3.  clamp cursor to framebuffer bounds, write back to mouse::MOUSE
-4.  update_mouse(mx, my, btn):
-      handles drag, resize, taskbar, start menu, window clicks
-5.  sync FOCUSED_WIN ← desktop.focused on fresh mouse click
-6.  HepFS window click handler (nav buttons, dir nav, file→editor)
-7.  if dirty:
-      a. clear background (desktop.render)
-      b. for each non-minimized window in z-order (bottom→top):
-           draw_window chrome (border, title bar, content bg)
-           draw window content (render_welcome / render_hepfs / terminal.render / editor.render)
-      c. draw_start_menu (if open)
-      d. draw_taskbar (always on top)
-      e. draw cursor (yellow crosshair = cursor mode, white cross = window focused)
-8.  spin ~16ms
+Each iteration (~16ms / 60fps):
+  1. ps2::poll() + mouse::poll() + xhci::poll_mouse()  → updates mouse::MOUSE
+  2. Keyboard routing:
+       FOCUSED_WIN == Some(3)  → editor.on_key(c)
+                                  if ed.open becomes false: minimize win 3, focus win 2
+       anything else           → terminal.on_key(c)
+  3. Clamp mouse coords to framebuffer bounds
+  4. desktop::update_mouse(mx, my, btn)
+       → drag, resize, taskbar clicks, start menu, close button
+  5. On fresh left-click: sync FOCUSED_WIN ← desktop.focused
+  6. HepFS click handler: nav bar (back/fwd), file list (enter dir / open file)
+  7. If dirty:
+       a. desktop.render()           — clear background
+       b. for each window (bottom → top in z-order):
+            draw_window()            — border, title bar, content bg
+            render content           — welcome / hepfs / terminal / editor / sysmon
+       c. draw_start_menu()          — popup if open
+       d. draw_taskbar()             — always on top
+       e. draw cursor                — white crosshair
+  8. UPTIME_FRAMES += 1
+  9. spin ~16ms
 ```
 
 ---
 
-## Terminal Render Constants
+## Terminal Internals
 
 ```rust
-const SCALE:      usize = 2;   // 2× font scale for readability
-const COLS:       usize = 30;  // characters per line (fixed — doesn't reflow yet)
-const SCROLLBACK: usize = 200; // scrollback buffer lines
-const CHAR_W:     usize = 19;  // pixels per column (9 * SCALE + 1)
-const CHAR_H:     usize = 18;  // pixels per row    (8 * SCALE + 2)
+const SCALE:           usize = 2;      // 2× font — each char is 19×18 px
+const MAX_COLS:        usize = 120;    // cell array width (cells always allocated)
+const DEFAULT_COLS:    usize = 30;     // initial cols before first render
+const SCROLLBACK:      usize = 200;    // line history
+// self.cols updated each frame from window width: (ww - 8) / CHAR_W
 ```
+
+Lines stored as `[Cell; MAX_COLS]` — no per-line allocation. `self.cols` is updated every `render()` call from the actual window pixel width, so the terminal automatically uses more columns when the window is resized wider.
 
 ---
 
 ## Architecture Notes
 
-- **PMM only frees pages above 1MB:** avoids 0xA0000–0xFFFFF reserved hole (VGA/BIOS)
-- **Bump heap assumes contiguous pages:** first 256 PMM pages must be contiguous (true above 1MB on QEMU)
-- **Scheduler starts last:** APIC timer + scheduler init happens after ALL device init. First timer tick switches kmain → task_blink with IF=0; task_blink enables interrupts via spin_loop.
-- **x2APIC (MSR mode):** xAPIC MMIO at 0xFEE00000 isn't in Limine HHDM; MSRs bypass this
-- **PS/2 poll ordering:** `ps2::poll()` must run before `mouse::poll()` or mouse bytes get eaten
-- **XHCI ring wrap:** Link TRB TC bit must be 1 on EVERY wrap (not just odd ones). Otherwise XHC doesn't toggle PCS → desync → transfers stop after 2nd wrap.
-- **QEMU SDL mouse:** SDL routes the pointer to USB tablet (absolute), not PS/2 AUX. XHCI handles this correctly.
-- **Z-order rendering:** Windows vec order = z-order. `bring_to_front` removes + re-appends. Chrome + content rendered together per window (not all chrome then all content) to prevent lower-window content painting over upper-window chrome.
+- **PMM above 1MB only** — avoids VGA/BIOS hole 0xA0000–0xFFFFF
+- **Bump heap, no free** — slab allocator is on the roadmap
+- **Scheduler starts last** — APIC timer fires → context switch kmain → task_blink. If started early, task_blink runs before NVMe/XHCI init
+- **x2APIC via MSR** — xAPIC MMIO at 0xFEE00000 is outside Limine's HHDM; MSR mode avoids needing to map it
+- **PS/2 poll order** — `ps2::poll()` before `mouse::poll()`; both read port 0x60; mouse bytes get eaten if order is wrong
+- **XHCI ring wrap** — Link TRB TC must be 1 on every wrap. If only set on odd wraps, XHC stops toggling PCS and transfers freeze after wrap 2
+- **Z-order rendering** — chrome + content drawn together per window in z-order so a lower window's content can't overdraw a higher window's title bar
+- **build.rs** — emits `-T<path>/linker.ld` via `cargo:rustc-link-arg` using `CARGO_MANIFEST_DIR`. Replaces the old hardcoded Windows absolute path in config.toml
 
 ---
 
 ## Dev Tips
 
-- **Serial output** → PowerShell terminal running build.ps1 (early boot messages scroll past quickly)
-- **Mouse** → move freely; click any window to focus it
-- **Tab in terminal** → complete command name or filename
-- **Resize a window** → drag the bottom-right corner (handle shown as diagonal dots)
-- **HepFS navigation** → click `<` / `>` buttons or click a directory entry; click `..` to go up
-- **Click a file in HepFS** → opens in editor; editor auto-focuses
-- **Ctrl+L / Ctrl+K** in terminal → clear screen
-- **↑/↓** → history; Ctrl+P/N = reliable alternative
-- **F2** = editor save; **F10** = editor close (warns if unsaved, second press force-closes)
-- **PgUp/PgDn** in editor → scroll one screen; **Ctrl+Home/End** → file start/end
-- **`netstart`** → manually init e1000 (workaround for auto-init panic)
-- **`lspci`** → see all PCI devices with vendor:device IDs
-- **`sysinfo`** / **`cat /kernel.txt`** → kernel info from inside OS
-- **Panic output** → now printed to serial (file:line:message) before spinning
+- **Build + run:** `.\build.ps1` (Windows) or `./build.sh` (Linux)
+- **Serial output** → the terminal that launched build.ps1/build.sh (panic messages appear here)
+- **Mouse** → click any window to focus it for keyboard input
+- **Tab** in terminal → complete command or filename
+- **←/→** in terminal → move cursor within current input line
+- **Resize window** → drag the diagonal-dot handle at the bottom-right corner
+- **HepFS** → click `<`/`>` to navigate history; click a dir to enter; click `..` to go up
+- **Ctrl+F** in editor → find mode; type query, `Enter`/`Ctrl+G` = next match, `ESC` = exit
+- **Ctrl+L** in terminal → clear screen
+- **F2** = save in editor; **F10** = close (warns unsaved, second press forces)
+- **`lspci`** → full PCI device list with vendor:device IDs
+- **`sysinfo`** → kernel details from inside the OS
+- **Sysmon window** → open from start menu; shows live RAM bar + uptime + PCI list
 
 ---
 
-## QEMU Hardware Details
+## QEMU Hardware Reference
 
 | Item | Value |
 |------|-------|
-| RAM | 256MB |
-| NVMe | 512MB raw (`hepos_disk.img`, auto-created if missing) |
+| RAM | 256 MB |
+| NVMe disk | 512 MB raw (`hepos_disk.img`) |
 | NVMe BAR | 0xFEBD4000 |
 | e1000 BAR | 0xFEBC0000 |
 | e1000 MAC | 52:54:00:12:34:56 |
 | SLiRP gateway | 10.0.2.2, MAC 52:55:0a:00:02:02 |
-| HHDM offset | 0xFFFF800000000000 (typical Limine value) |
-| XHCI | PCI 1B36:000D (qemu-xhci), usb-tablet on bus xhci.0 |
+| Static IP | 10.0.2.15 / 255.255.255.0 |
+| HHDM offset | 0xFFFF800000000000 (Limine default) |
+| XHCI | PCI 1B36:000D, usb-tablet on xhci.0 |
 
 ---
 
 ## Crate Dependencies
 
 ```toml
-limine = "0.6.5"   # MIT
-spin   = "0.9"     # MIT
-# alloc from rust-src (MIT/Apache-2)
+limine = "0.6"   # Boot protocol structs — MIT
+spin   = "0.9"   # Mutex without std — MIT
+# core, alloc, compiler_builtins from rust-src (MIT/Apache-2)
 ```
 
-All drivers, FS, networking, and desktop written from scratch.
+All drivers, filesystem, networking, desktop, and apps written from scratch.
