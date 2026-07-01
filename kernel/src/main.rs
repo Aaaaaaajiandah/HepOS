@@ -38,7 +38,7 @@ use spin::Mutex;
 // Global display — used by exception handler and future modules
 pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 
-// Focus: None = cursor mode (WASD moves cursor), Some(id) = window has keyboard focus
+// Focus: Some(id) = that window has keyboard focus; defaults to terminal (id=2)
 pub static FOCUSED_WIN: Mutex<Option<usize>> = Mutex::new(None);
 pub static PCI_DEVS: Mutex<alloc::vec::Vec<pci::PciDevice>> = Mutex::new(alloc::vec::Vec::new());
 
@@ -301,17 +301,19 @@ fn task_blink() -> ! {
             btn = m.buttons;
         }
 
-        // Keyboard routing depends on focus
+        // Keyboard routing: editor gets all keys when focused, otherwise terminal
         let mut ps2_had_input = false;
         while let Some(c) = ps2::read_char() {
             ps2_had_input = true;
             let focused = *FOCUSED_WIN.lock();
 
-            match c {
-                '\x1b' if focused != Some(3) => {
-                    // ESC → cursor mode (yellow crosshair, WASD to move)
-                    // Minimize editor window so it doesn't block clicks
-                    {
+            if focused == Some(3) {
+                // Editor has focus — route all keys
+                let mut eg = editor::EDITOR.lock();
+                if let Some(ed) = eg.as_mut() {
+                    ed.on_key(c);
+                    if !ed.open {
+                        drop(eg);
                         let mut dt = desktop::DESKTOP.lock();
                         if let Some(dt) = dt.as_mut() {
                             if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
@@ -319,67 +321,13 @@ fn task_blink() -> ! {
                             }
                             dt.dirty = true;
                         }
-                    }
-                    *FOCUSED_WIN.lock() = None;
-                }
-                _ if focused == Some(3) => {
-                    // Editor has focus — route all keys including ESC
-                    let mut eg = editor::EDITOR.lock();
-                    if let Some(ed) = eg.as_mut() {
-                        ed.on_key(c);
-                        if !ed.open {
-                            drop(eg);
-                            let mut dt = desktop::DESKTOP.lock();
-                            if let Some(dt) = dt.as_mut() {
-                                if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
-                                    w.minimized = true;
-                                }
-                                dt.dirty = true;
-                            }
-                            *FOCUSED_WIN.lock() = Some(2);
-                        }
-                    }
-                }
-                _ if focused.is_some() => {
-                    // Terminal (or other window) has focus
-                    let mut tg = terminal::TERMINAL.lock();
-                    if let Some(t) = tg.as_mut() { t.on_key(c); }
-                }
-                // Cursor mode (no focus)
-                'w' => my -= 6,
-                's' => my += 6,
-                'a' => mx -= 6,
-                'd' => mx += 6,
-                ' ' => {
-                    // Space = click: focus the topmost window under cursor
-                    // Also check title bar area
-                    let clicked_id = {
-                        let dt = desktop::DESKTOP.lock();
-                        dt.as_ref().and_then(|d| {
-                            d.windows.iter().rev()
-                                .find(|w| !w.minimized &&
-                                    (w.content_hit(mx, my) || w.title_hit(mx, my)))
-                                .map(|w| w.id)
-                        })
-                    };
-                    if let Some(id) = clicked_id {
-                        *FOCUSED_WIN.lock() = Some(id);
-                        // Also un-minimize editor if clicking on it
-                        if id == 3 {
-                            let mut eg = editor::EDITOR.lock();
-                            if let Some(ed) = eg.as_mut() {
-                                if !ed.open { drop(eg); *FOCUSED_WIN.lock() = Some(2); }
-                            }
-                        }
-                        let mut dt = desktop::DESKTOP.lock();
-                        if let Some(dt) = dt.as_mut() { dt.dirty = true; }
-                    }
-                    // If nothing clicked, focus terminal as default
-                    if FOCUSED_WIN.lock().is_none() {
                         *FOCUSED_WIN.lock() = Some(2);
                     }
                 }
-                _ => {}
+            } else {
+                // Terminal (or any other window) gets the key
+                let mut tg = terminal::TERMINAL.lock();
+                if let Some(t) = tg.as_mut() { t.on_key(c); }
             }
         }
 
@@ -637,12 +585,7 @@ fn task_blink() -> ! {
                 {
                     let cx = mx as usize;
                     let cy = my as usize;
-                    let focused = *FOCUSED_WIN.lock();
-                    let col = if focused.is_none() {
-                        framebuffer::Color::from_hex(0xFFFF00) // yellow = cursor mode
-                    } else {
-                        framebuffer::Color::from_hex(0xFFFFFF) // white = window focused
-                    };
+                    let col = framebuffer::Color::from_hex(0xFFFFFF);
                     display.fill_rect(cx.saturating_sub(6), cy, 13, 1, col);
                     display.fill_rect(cx, cy.saturating_sub(6), 1, 13, col);
                 }
@@ -804,9 +747,8 @@ fn render_welcome_window(display: &mut framebuffer::Display) {
     display.draw_text(wx + 4, y, if has_nvme { "NVMe: OK" } else { "NVMe: --" },
         if has_nvme { ok } else { dim }, 1); y += 14;
 
-    display.draw_text(wx + 4, y, "HepFS: OK", ok, 1); y += 14;
-    display.draw_text(wx + 4, y, "ESC=cursor/terminal toggle", dim, 1);
-    let _ = ww; let _ = wh;
+    display.draw_text(wx + 4, y, "HepFS: OK", ok, 1);
+    let _ = (y, ww, wh);
 }
 
 fn fmt_mem<'a>(free_mb: u64, total_mb: u64, buf: &'a mut [u8; 64]) -> &'a str {

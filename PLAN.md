@@ -106,11 +106,11 @@ task_blink runs before XHCI/networking are initialized.
 ## Focus System
 
 - **Default:** Terminal focused (`FOCUSED_WIN = Some(2)`), all keys → terminal
-- **ESC:** Enter cursor mode (`FOCUSED_WIN = None`, yellow crosshair, WASD moves cursor)
-- **ESC from editor:** close editor window → terminal focus
-- **Space on window (cursor mode):** focus that window
 - **Mouse click on window:** brings it to front AND syncs keyboard focus to it
+- **Editor close (ESC/F10/Ctrl+Q):** focus returns to terminal
 - **Ctrl+C in terminal:** cancel current input, show `^C`
+
+> Cursor mode (ESC → WASD + Space) has been removed — mouse handles all navigation.
 
 ---
 
@@ -463,8 +463,7 @@ const CHAR_H:     usize = 18;  // pixels per row    (8 * SCALE + 2)
 ## Dev Tips
 
 - **Serial output** → PowerShell terminal running build.ps1 (early boot messages scroll past quickly)
-- **Mouse** → move freely after XHCI init; no WASD needed unless in cursor mode
-- **ESC** → cursor mode (yellow `+` crosshair); click a window or press Space to re-focus
+- **Mouse** → move freely; click any window to focus it
 - **Tab in terminal** → complete command name or filename
 - **Resize a window** → drag the bottom-right corner (handle shown as diagonal dots)
 - **HepFS navigation** → click `<` / `>` buttons or click a directory entry; click `..` to go up
