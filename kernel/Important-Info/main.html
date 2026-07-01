@@ -1,20 +1,271 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HepOS — A Rust-Based Exokernel</title>
   <style>
-    body {
-      background-color: #f4f4f9;
+    :root {
+      --bg: #07111f;
+      --panel: #101c31;
+      --panel-2: #16253f;
+      --text: #e8eefc;
+      --muted: #9eb0cf;
+      --accent: #74c0fc;
+      --accent-2: #7c8cff;
+      --border: rgba(255, 255, 255, 0.12);
     }
-    h1 {
-            color: DarkSlateBlue;
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: radial-gradient(circle at top, #14253f 0%, var(--bg) 45%, #050913 100%);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+    .hero {
+      padding: 48px 0 30px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(116, 192, 252, 0.16);
+      color: var(--accent);
+      font-size: 0.9rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { font-size: clamp(2.3rem, 5vw, 3.6rem); margin: 0 0 10px; }
+    h2 { font-size: 1.5rem; margin-bottom: 12px; }
+    .hero p { font-size: 1.08rem; max-width: 720px; color: var(--muted); }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 24px 0 18px;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+
+    .button:hover {
+      transform: translateY(-1px);
+      border-color: var(--accent);
+      text-decoration: none;
+    }
+
+    .button.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #041019; font-weight: 700; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .stat {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .stat strong { display: block; font-size: 1.05rem; margin-bottom: 4px; }
+    .stat span { color: var(--muted); font-size: 0.95rem; }
+
+    section { padding: 28px 0; border-bottom: 1px solid var(--border); }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+
+    .card h3 { margin-top: 0; margin-bottom: 8px; }
+    .card p, .card li { color: var(--muted); }
+    .card ul { margin: 0; padding-left: 18px; }
+
+    .architecture {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .layer {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .layer strong { color: var(--accent); }
+
+    .code {
+      background: #02070f;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      overflow-x: auto;
+      color: #b8d7ff;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95rem;
+    }
+
+    footer {
+      padding: 24px 0 36px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 700px) {
+      .wrap { padding: 18px; }
+      .hero { padding-top: 28px; }
     }
   </style>
 </head>
 <body>
-<h1>HepOS is better than jsos</h1>
-<h2>this is very true you need to see the great inspiration</h2>
-<p>HepOS is better than jsOS beacuse hepos is rust which is so better than c and sounds and compiles better. C is way dumb and even worse then all other lgnauges maybe and so cooked and maybe even worse then c++ and assembly and Zig????</p>
-<p>ok now this is random thing about zig</p>
-<p>nevermind nobody cares about zig, also its better as hepos is exokernel which is so good and superior then all other kernel types like monolithic and microkernel and hybrid kernel and nanokernel and uniekrnel and templeos ig</p>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Rust • x86_64 • Exokernel</div>
+      <h1>HepOS</h1>
+      <p>A custom operating system built from scratch in Rust, with a graphical desktop, a custom filesystem, and a boot experience powered by Limine. HepOS is designed as an exokernel: the kernel handles hardware, while the rest of the system lives in a growing kernel-space libOS.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#features">See what is built</a>
+        <a class="button" href="#roadmap">View the roadmap</a>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong>No Linux</strong><span>no POSIX, no libc</span></div>
+        <div class="stat"><strong>Custom FS</strong><span>HepFS with flat inodes</span></div>
+        <div class="stat"><strong>Desktop UI</strong><span>windows, taskbar, start menu</span></div>
+        <div class="stat"><strong>Bootloader</strong><span>Limine v9.x</span></div>
+      </div>
+    </header>
+
+    <section id="about">
+      <h2>What HepOS is</h2>
+      <p>HepOS is a small but ambitious x86_64 operating system that pushes the boundaries of a bare-metal Rust kernel. It includes features such as a framebuffer-based desktop, a terminal shell, a text editor, a custom filesystem, PCI and NVMe support, and early networking work. The project is still evolving, but the core kernel infrastructure is already in place.</p>
+    </section>
+
+    <section id="features">
+      <h2>Highlights</h2>
+      <div class="card-grid">
+        <article class="card">
+          <h3>Desktop and window manager</h3>
+          <p>A floating compositor with drag-to-move and drag-to-resize windows, a taskbar, and a start menu for launching apps.</p>
+        </article>
+        <article class="card">
+          <h3>Terminal shell</h3>
+          <p>More than 30 built-in commands, history, cursor movement, tab completion, and basic filesystem operations.</p>
+        </article>
+        <article class="card">
+          <h3>Text editor and file browser</h3>
+          <p>Open files from the shell or the HepFS navigator, edit text, search, save, and navigate directories.</p>
+        </article>
+        <article class="card">
+          <h3>Custom storage stack</h3>
+          <p>HepFS uses a flat-inode layout on NVMe with direct and indirect blocks, plus a kernel manifest at /kernel.txt.</p>
+        </article>
+        <article class="card">
+          <h3>Drivers and hardware support</h3>
+          <ul>
+            <li>PS/2 keyboard</li>
+            <li>NVMe storage</li>
+            <li>XHCI USB tablet mouse</li>
+            <li>RTL8139 and e1000 networking</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Kernel infrastructure</h3>
+          <ul>
+            <li>GDT and IDT</li>
+            <li>PMM and paging</li>
+            <li>x2APIC scheduler</li>
+            <li>Serial debug and panic reporting</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Architecture at a glance</h2>
+      <div class="architecture">
+        <div class="layer"><strong>LibOS (kernel space)</strong> — desktop, shell, editor, HepFS navigator, and app logic.</div>
+        <div class="layer"><strong>Kernel</strong> — memory management, scheduling, interrupts, ACPI, and core abstractions.</div>
+        <div class="layer"><strong>Hardware</strong> — display, storage, input, networking, and PCI devices.</div>
+      </div>
+    </section>
+
+    <section id="build">
+      <h2>Build and run</h2>
+      <p>HepOS builds on Windows and Linux with scripts that compile the kernel, generate the ISO, and launch QEMU.</p>
+      <div class="code">
+Windows: .\build.ps1<br />
+Linux: ./build.sh
+      </div>
+      <p>The project targets <strong>x86_64-unknown-none</strong> and uses the Limine bootloader with a bootable ISO and NVMe disk image.</p>
+    </section>
+
+    <section id="roadmap">
+      <h2>Roadmap and next milestones</h2>
+      <div class="card-grid">
+        <article class="card">
+          <h3>Near-term goals</h3>
+          <ul>
+            <li>Syscall interface and ring-3 userspace</li>
+            <li>ELF loader for user programs</li>
+            <li>Basic std shim for Rust crates</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Platform work</h3>
+          <ul>
+            <li>Audio support with Intel HDA</li>
+            <li>Double-indirect blocks for larger files</li>
+            <li>Improved networking and real-world validation</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Known issues</h3>
+          <ul>
+            <li>Networking RX is still flaky in some QEMU setups</li>
+            <li>Memory freeing is limited by the current bump allocator</li>
+            <li>ACPI shutdown still needs more hardware-aware work</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    HepOS — a handcrafted Rust kernel with a desktop environment, custom filesystem, and a growing set of operating system features.
+  </footer>
 </body>
 </html>
