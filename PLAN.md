@@ -32,7 +32,7 @@ kernel/
     pmm.rs         Bitmap PMM (pages above 1MB only, alloc_contiguous)
     vmm.rs         HHDM offset, phys_to_virt
     paging.rs      PML4 walker, map_page, map_mmio (NOCACHE)
-    heap.rs        Bump allocator 1MB, GlobalAlloc, no-free
+    heap.rs        Slab allocator — 10 size classes (8B–4KB), large allocs via PMM, full dealloc
     apic.rs        x2APIC (MSR), 10ms timer, disables 8259 PIC
     acpi.rs        ACPI shutdown (port 0x604) + PS/2 reboot
     rtc.rs         CMOS RTC: now(), fmt_time(), fmt_date()
@@ -50,6 +50,9 @@ kernel/
     e1000.rs       Intel 82540EM driver (TX works, RX pending)
     rtl8139.rs     RTL8139 driver (flat ring, TX works, RX broken on QEMU Windows)
     virtio_net.rs  virtio-net legacy (incomplete)
+    syscall.rs     SYSCALL/SYSRET gate, SWAPGS, MSR setup, dispatcher (write/exit)
+    process.rs     Ring-3 process: user PML4, ELF loader entry, IRETQ, exit longjmp
+    elf.rs         ELF64 parser/loader — maps PT_LOAD segments into a user PML4
     serial.rs      COM1 debug: print, print_hex
     panic.rs       Prints file:line:message to serial, then spins
 
@@ -295,7 +298,7 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ✓ | Syscall gate — SYSCALL/SYSRET, SWAPGS, TSS RSP0, dispatcher (write/exit) |
 | ✓ | GDT: ring-3 code+data segments, 64-bit TSS descriptor, ltr |
 | ✓ | Per-process page tables — user PML4, ring-3 entry via IRETQ, exit longjmp |
-| ○ | ELF loader (load arbitrary user binaries) |
+| ✓ | ELF loader — ELF64 header/phdr parsing, PT_LOAD mapping, exec from HepFS |
 
 ### Drivers
 | ✓/○ | Feature |
@@ -351,8 +354,8 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 | ○ | Working RX (Linux/KVM only right now) |
 | ○ | TCP / UDP stack |
 | ○ | DNS, HTTP client |
+| ✓ | Userspace — ring 3, SYSCALL/SYSRET, ELF loader, exec from HepFS |
 | ○ | `std` shim → unlock Rust crates |
-| ○ | Userspace — ring 3, ELF loader, syscalls |
 
 ---
 
@@ -369,17 +372,15 @@ RX works on Linux/KVM — this is a QEMU Windows SLiRP path issue, not a driver 
 
 ## Next Steps (Priority Order)
 
-1. **Networking RX on Linux/KVM** — confirm RTL8139/e1000 RX works there; if yes, QEMU/Windows is a known environment issue not a bug
-2. **ELF loader** — parse ELF64 headers, map PT_LOAD segments into a user PML4, jump to e_entry; run a real Rust/C hello-world binary
-3. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
-4. **Process table** — struct per process (PML4, kernel stack, state), scheduler integration for preemptive multitasking
-6. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
-7. **Intel HDA audio** — PCI enumerate, CORB/RIRB setup, play PCM; pair with a beep command
-8. **TCP/UDP stack** — build on existing ARP/IP layer; needed for any real networking app
-9. **Window maximize / snap** — double-click title bar to maximize; drag to screen edge to snap half
-10. **Multiple terminal windows** — allow spawning a second terminal from start menu
-11. **Desktop icons** — clickable icons on the desktop background for each app
-12. **RTL8169 / real hardware NIC** — for running on physical machines
+1. **`std` shim** — implement enough of `std` (alloc, io, fs stubs) so external Rust crates can link
+2. **Process table** — struct per process (PML4, kernel stack, state), scheduler integration for preemptive multitasking
+3. **Networking RX on Linux/KVM** — confirm RTL8139/e1000 RX works there; if yes, QEMU/Windows is a known environment issue not a bug
+4. **Intel HDA audio** — PCI enumerate, CORB/RIRB setup, play PCM; pair with a beep command
+5. **TCP/UDP stack** — build on existing ARP/IP layer; needed for any real networking app
+6. **Window maximize / snap** — double-click title bar to maximize; drag to screen edge to snap half
+7. **Multiple terminal windows** — allow spawning a second terminal from start menu
+8. **Desktop icons** — clickable icons on the desktop background for each app
+9. **RTL8169 / real hardware NIC** — for running on physical machines
 
 ---
 
@@ -459,7 +460,7 @@ Lines stored as `[Cell; MAX_COLS]` — no per-line allocation. `self.cols` is up
 ## Architecture Notes
 
 - **PMM above 1MB only** — avoids VGA/BIOS hole 0xA0000–0xFFFFF
-- **Bump heap, no free** — slab allocator is on the roadmap
+- **Slab allocator** — 10 size classes (8B–4KB), large allocs via PMM `alloc_contiguous`, full `dealloc` (push to free list or return page to PMM)
 - **Scheduler starts last** — APIC timer fires → context switch kmain → task_blink. If started early, task_blink runs before NVMe/XHCI init
 - **x2APIC via MSR** — xAPIC MMIO at 0xFEE00000 is outside Limine's HHDM; MSR mode avoids needing to map it
 - **PS/2 poll order** — `ps2::poll()` before `mouse::poll()`; both read port 0x60; mouse bytes get eaten if order is wrong

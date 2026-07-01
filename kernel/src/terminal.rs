@@ -253,7 +253,7 @@ impl Terminal {
             "help", "clear", "pwd", "ls", "cd", "cat", "mkdir", "touch",
             "rm", "cp", "mv", "write", "edit", "uname", "mem", "date",
             "history", "lspci", "netdiag", "netstart", "netpoll", "ifconfig",
-            "ping", "shutdown", "reboot", "echo", "sysinfo", "syscallinfo", "runtest",
+            "ping", "shutdown", "reboot", "echo", "sysinfo", "syscallinfo", "runtest", "exec",
         ];
 
         let partial = self.cmd_buf.clone();
@@ -677,6 +677,29 @@ impl Terminal {
                      (check serial/host terminal for ring-3 write output)\n",
                     code
                 ));
+            }
+
+            "exec" => {
+                if arg1.is_empty() { self.print_colored("usage: exec <file>\n", ERR); return; }
+                match self.resolve(arg1) {
+                    None => { self.print_colored("exec: file not found\n", ERR); }
+                    Some(ino) => {
+                        let (is_dir, _) = self.with_ctrl(|ctrl| crate::hepfs::stat(ctrl, ino));
+                        if is_dir { self.print_colored("exec: is a directory\n", ERR); return; }
+                        let data = self.with_ctrl(|ctrl| crate::hepfs::read_file(ctrl, ino));
+                        self.print_colored("Executing ELF...\n", OK);
+                        match crate::process::run_elf(&data) {
+                            Ok(code) => self.print(&alloc::format!(
+                                "Process exited with code {}.\n\
+                                 (check serial/host terminal for program output)\n",
+                                code
+                            )),
+                            Err(e) => self.print_colored(
+                                &alloc::format!("exec: {}\n", e), ERR
+                            ),
+                        }
+                    }
+                }
             }
 
             "syscallinfo" => {

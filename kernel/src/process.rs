@@ -1,52 +1,84 @@
-//! Minimal ring-3 process support.
+//! Ring-3 process support.
 //!
-//! `run_test()` sets up a fresh user address space, copies a small embedded
-//! program into it, and enters ring 3 via IRETQ.  The program calls:
-//!   write(1, "Hello from ring 3!\n", 19)  → serial output
-//!   exit(0)                                → longjmps back to kernel
+//! `run_elf(data)` loads an ELF64 binary into a fresh user address space
+//! and enters ring 3 via IRETQ.  The process calls back into the kernel
+//! via SYSCALL; when it calls exit(N) the longjmp in `do_exit` returns
+//! control here and `run_elf` returns N.
+//!
+//! `run_test()` runs an embedded ELF that prints "Hello from ring 3!" and
+//! exits — useful as a quick sanity check without touching HepFS.
 //!
 //! The APIC timer is masked for the duration so the scheduler does not
-//! try to context-switch away mid-flight.
+//! try to context-switch away from a process it doesn't know about.
 
-use crate::{apic, paging, pmm, vmm};
+use crate::{apic, elf, paging, pmm, vmm};
 
 // ── User virtual address layout ───────────────────────────────────────────────
 
-const USER_CODE_BASE:  u64 = 0x0040_0000;   // 4 MB — traditional ELF load address
 const USER_STACK_PAGE: u64 = 0x7FFF_E000;   // one page mapped for the stack
-const USER_STACK_TOP:  u64 = 0x7FFF_F000;   // RSP starts at page top
+const USER_STACK_TOP:  u64 = 0x7FFF_F000;   // RSP starts at page top (one page above)
 
-// ── Embedded user program (raw x86-64 machine code) ──────────────────────────
+// ── Embedded test ELF ─────────────────────────────────────────────────────────
+//
+// A minimal ELF64 executable that calls write(1, "Hello from ring 3!\n", 19)
+// and then exit(0).  Entry point = 0x400078 (first byte after ELF + phdr).
 //
 // Layout:
-//   0:  mov rax, 1          (SYS_WRITE)
-//   7:  mov rdi, 1          (fd = stdout)
-//  14:  lea rsi, [rip+23]   → points to msg at offset 44
-//  21:  mov rdx, 19         (len = 19 bytes)
-//  28:  syscall
-//  30:  mov rax, 60         (SYS_EXIT)
-//  37:  xor rdi, rdi        (exit code 0)
-//  40:  syscall
-//  42:  jmp -2              (infinite loop — sys_exit longjmps back before this)
-//  44:  "Hello from ring 3!\n"
-static USER_PROGRAM: [u8; 63] = [
-    // mov rax, 1
+//   bytes   0 –  63: ELF header (64 bytes)
+//   bytes  64 – 119: PT_LOAD program header (56 bytes)
+//   bytes 120 – 182: code + message (63 bytes)  → loaded at VA 0x400078
+//
+// The lea rsi,[rip+0x17] at offset 14 within the code resolves to 0x4000A4
+// (RIP after the 7-byte instruction = 0x40008D; 0x40008D + 0x17 = 0x4000A4),
+// where the 19-byte message string lives.
+static TEST_ELF: [u8; 183] = [
+    // ── ELF header (64 bytes) ────────────────────────────────────────────────
+    0x7f, b'E', b'L', b'F',                          // magic
+    0x02,                                              // EI_CLASS  = ELFCLASS64
+    0x01,                                              // EI_DATA   = ELFDATA2LSB
+    0x01,                                              // EI_VERSION
+    0x00,                                              // EI_OSABI  = System V
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // padding
+    0x02, 0x00,                                        // e_type    = ET_EXEC
+    0x3e, 0x00,                                        // e_machine = x86-64
+    0x01, 0x00, 0x00, 0x00,                            // e_version = 1
+    0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,  // e_entry   = 0x400078
+    0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // e_phoff   = 64
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // e_shoff   = 0
+    0x00, 0x00, 0x00, 0x00,                            // e_flags   = 0
+    0x40, 0x00,                                        // e_ehsize  = 64
+    0x38, 0x00,                                        // e_phentsize = 56
+    0x01, 0x00,                                        // e_phnum   = 1
+    0x40, 0x00,                                        // e_shentsize = 64
+    0x00, 0x00,                                        // e_shnum   = 0
+    0x00, 0x00,                                        // e_shstrndx = 0
+    // ── PT_LOAD program header (56 bytes) ────────────────────────────────────
+    0x01, 0x00, 0x00, 0x00,                            // p_type   = PT_LOAD
+    0x05, 0x00, 0x00, 0x00,                            // p_flags  = PF_R | PF_X
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_offset = 0 (load whole file)
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_vaddr  = 0x400000
+    0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_paddr  = 0x400000
+    0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_filesz = 183
+    0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_memsz  = 183
+    0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // p_align  = 0x1000
+    // ── Code + message (63 bytes, loaded at VA 0x400078) ─────────────────────
+    // mov rax, 1   (SYS_WRITE)
     0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00,
-    // mov rdi, 1
+    // mov rdi, 1   (fd = stdout)
     0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00,
-    // lea rsi, [rip + 0x17]   (RIP at 21 after this instr; msg at 44; 44-21=23=0x17)
+    // lea rsi, [rip + 0x17]  → message at 0x4000A4
     0x48, 0x8D, 0x35, 0x17, 0x00, 0x00, 0x00,
-    // mov rdx, 19
+    // mov rdx, 19  (length)
     0x48, 0xC7, 0xC2, 0x13, 0x00, 0x00, 0x00,
     // syscall
     0x0F, 0x05,
-    // mov rax, 60
+    // mov rax, 60  (SYS_EXIT)
     0x48, 0xC7, 0xC0, 0x3C, 0x00, 0x00, 0x00,
-    // xor rdi, rdi
+    // xor rdi, rdi (exit code 0)
     0x48, 0x31, 0xFF,
     // syscall
     0x0F, 0x05,
-    // jmp -2  (fallback loop; sys_exit longjmps back before reaching this)
+    // jmp -2  (fallback loop — sys_exit longjmps back before this)
     0xEB, 0xFE,
     // "Hello from ring 3!\n"
     b'H', b'e', b'l', b'l', b'o', b' ',
@@ -63,7 +95,7 @@ pub static mut USER_RUNNING: bool = false;
 /// Saved kernel RSP from enter_ring3; do_exit restores it to return.
 static mut KERNEL_RETURN_RSP: u64 = 0;
 
-/// Exit code written by do_exit; read by run_test after return.
+/// Exit code written by do_exit; read by run_elf after return.
 static mut EXIT_CODE: u64 = 0;
 
 // ── CR3 helpers ───────────────────────────────────────────────────────────────
@@ -71,7 +103,7 @@ static mut EXIT_CODE: u64 = 0;
 fn read_cr3() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) v, options(nostack, nomem)); }
-    v & !0xFFF  // strip flags bits
+    v & !0xFFF
 }
 
 unsafe fn write_cr3(phys: u64) {
@@ -80,15 +112,14 @@ unsafe fn write_cr3(phys: u64) {
 
 // ── Page table setup ──────────────────────────────────────────────────────────
 
-/// Allocate a fresh PML4 and copy the kernel high-half entries (256..511)
-/// from the current PML4 so the kernel is reachable while the user PML4 is loaded.
+/// Allocate a fresh PML4 with the kernel high-half entries copied in.
 fn create_user_pml4() -> u64 {
     let phys = pmm::alloc_page().expect("process: OOM for PML4");
     let virt = vmm::phys_to_virt(phys);
     unsafe {
         core::ptr::write_bytes(virt, 0, 4096);
-        let cur  = vmm::phys_to_virt(read_cr3()) as *const u64;
-        let new  = virt as *mut u64;
+        let cur = vmm::phys_to_virt(read_cr3()) as *const u64;
+        let new = virt as *mut u64;
         for i in 256..512usize {
             new.add(i).write_volatile(cur.add(i).read_volatile());
         }
@@ -98,54 +129,54 @@ fn create_user_pml4() -> u64 {
 
 // ── Entry / exit ──────────────────────────────────────────────────────────────
 
-/// IRETQ into ring 3 at USER_CODE_BASE / USER_STACK_TOP.
+/// IRETQ into ring 3 at `entry` / `stack_top`.
 ///
-/// On entry: push callee-saved regs + save RSP → KERNEL_RETURN_RSP.
-/// "Returns" when do_exit() restores that RSP and executes ret.
+/// Saves callee-saved registers + RSP to KERNEL_RETURN_RSP so that
+/// `do_exit()` can restore them and "return" from this function.
 #[unsafe(naked)]
-unsafe extern "C" fn enter_ring3() {
+unsafe extern "C" fn enter_ring3(entry: u64, stack_top: u64) {
+    // entry    → RDI (SysV arg 1)
+    // stack_top → RSI (SysV arg 2)
     core::arch::naked_asm!(
-        // Save all callee-saved registers so do_exit's longjmp restores them.
+        // Save callee-saved registers.
         "push rbp",
         "push rbx",
         "push r12",
         "push r13",
         "push r14",
         "push r15",
-        // Record where the kernel stack is so do_exit can jump back here.
+        // Record kernel stack so do_exit can longjmp back.
         "lea rax, [rip + {krsp}]",
         "mov [rax], rsp",
-        // Build the IRETQ frame (CPU pops: RIP, CS, RFLAGS, RSP, SS).
-        // Push in reverse: SS first, then RSP, RFLAGS, CS, RIP.
-        "push 0x1b",            // SS  = USER_DS | RPL3
-        "push 0x7ffff000",      // RSP = USER_STACK_TOP
-        "push 0x202",           // RFLAGS: IF=1, bit-1 always set
-        "push 0x23",            // CS  = USER_CS | RPL3
-        "push 0x400000",        // RIP = USER_CODE_BASE
+        // Build IRETQ frame.  CPU pops: RIP, CS, RFLAGS, RSP, SS.
+        "push 0x1b",    // SS  = USER_DS | RPL3
+        "push rsi",     // RSP = stack_top (arg 2)
+        "push 0x202",   // RFLAGS: IF=1, bit-1 always set
+        "push 0x23",    // CS  = USER_CS | RPL3
+        "push rdi",     // RIP = entry    (arg 1)
         "iretq",
-        // ── do_exit longjmps back to here ────────────────────────────────────
-        // (restores RSP to saved value above, then executes the pops + ret below)
+        // do_exit longjmps here by restoring RSP to the saved value above,
+        // then executing the pop sequence + ret.
         krsp = sym KERNEL_RETURN_RSP,
     );
 }
 
-/// Called by sys_exit.  Restores the kernel stack frame left by enter_ring3
-/// and "returns" from it as if enter_ring3 had returned normally.
+/// Called by sys_exit from inside a syscall handler.
+/// Restores the kernel frame left by enter_ring3 and returns from it.
 ///
-/// SAFETY: must only be called while USER_RUNNING == true and from within
-/// the SYSCALL handling path (on the syscall kernel stack, not task_blink's stack).
+/// SAFETY: must only be called while USER_RUNNING == true.
 pub unsafe fn do_exit(code: u64) -> ! {
     EXIT_CODE = code;
     USER_RUNNING = false;
     core::arch::asm!(
-        "mov rsp, [{rsp}]",  // jump to kernel_return_rsp
+        "mov rsp, [{rsp}]",
         "pop r15",
         "pop r14",
         "pop r13",
         "pop r12",
         "pop rbx",
         "pop rbp",
-        "ret",               // returns from enter_ring3() → run_test() continues
+        "ret",
         rsp = sym KERNEL_RETURN_RSP,
         options(noreturn),
     );
@@ -153,51 +184,41 @@ pub unsafe fn do_exit(code: u64) -> ! {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Set up a user address space, enter ring 3, and wait for the process to exit.
-/// Returns the process exit code.
-pub fn run_test() -> u64 {
-    // 1. Build the user page tables.
+/// Load an ELF64 binary from `data`, run it in a fresh user address space,
+/// and return its exit code.
+pub fn run_elf(data: &[u8]) -> Result<u64, &'static str> {
     let pml4 = create_user_pml4();
 
-    // Code page: readable + user (exec is implicit — we don't set NX)
-    let code_phys = pmm::alloc_page().expect("process: OOM for code page");
-    let code_virt = vmm::phys_to_virt(code_phys);
-    unsafe {
-        core::ptr::write_bytes(code_virt, 0, 4096);
-        core::ptr::copy_nonoverlapping(
-            USER_PROGRAM.as_ptr(),
-            code_virt,
-            USER_PROGRAM.len(),
-        );
-    }
-    paging::map_page_into(pml4, USER_CODE_BASE, code_phys, paging::USER | paging::WRITE);
+    let loaded = elf::load(data, pml4)?;
 
-    // Stack page: read/write + user
-    let stack_phys = pmm::alloc_page().expect("process: OOM for stack page");
+    // Map user stack (one page, read/write)
+    let stack_phys = pmm::alloc_page().ok_or("run_elf: OOM for stack")?;
     unsafe { core::ptr::write_bytes(vmm::phys_to_virt(stack_phys), 0, 4096); }
     paging::map_page_into(pml4, USER_STACK_PAGE, stack_phys, paging::USER | paging::WRITE);
 
-    // 2. Mask the timer so the scheduler doesn't preempt during ring-3 execution.
+    // Mask timer, switch to user PML4, enter ring 3
     apic::mask_timer();
-
-    // 3. Switch to the user page tables and enter ring 3.
     let orig_cr3 = read_cr3();
     unsafe {
         write_cr3(pml4);
         USER_RUNNING = true;
-        enter_ring3(); // "returns" when do_exit() is called from sys_exit
+        enter_ring3(loaded.entry, USER_STACK_TOP);
+        // Returns here after do_exit longjmp
     }
-
-    // 4. Restore kernel page tables and re-enable scheduling.
     unsafe { write_cr3(orig_cr3); }
     apic::unmask_timer();
 
-    // 5. Free user pages.
-    pmm::free_page(code_phys);
+    // Free user memory
     pmm::free_page(stack_phys);
-    // Note: intermediate page-table pages (PT, PD, PDP, PML4) are leaked for now.
-    // Full cleanup would walk the user-space portion of pml4 and free every page.
+    for phys in loaded.pages { pmm::free_page(phys); }
+    // Note: intermediate page-table pages (PT/PD/PDP) are leaked here.
+    // A full cleanup would walk the low-half of pml4.  Acceptable for now.
     pmm::free_page(pml4);
 
-    unsafe { EXIT_CODE }
+    Ok(unsafe { EXIT_CODE })
+}
+
+/// Run the embedded ELF test binary (prints "Hello from ring 3!" via serial).
+pub fn run_test() -> u64 {
+    run_elf(&TEST_ELF).unwrap_or(u64::MAX)
 }
