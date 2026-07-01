@@ -54,6 +54,9 @@ unsafe fn wrmsr(msr: u32, val: u64) {
     );
 }
 
+/// Public wrapper — used by terminal's `syscallinfo` command for MSR readback.
+pub unsafe fn rdmsr_pub(msr: u32) -> u64 { rdmsr(msr) }
+
 unsafe fn rdmsr(msr: u32) -> u64 {
     let lo: u32;
     let hi: u32;

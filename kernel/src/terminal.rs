@@ -253,7 +253,7 @@ impl Terminal {
             "help", "clear", "pwd", "ls", "cd", "cat", "mkdir", "touch",
             "rm", "cp", "mv", "write", "edit", "uname", "mem", "date",
             "history", "lspci", "netdiag", "netstart", "netpoll", "ifconfig",
-            "ping", "shutdown", "reboot", "echo", "sysinfo",
+            "ping", "shutdown", "reboot", "echo", "sysinfo", "syscallinfo",
         ];
 
         let partial = self.cmd_buf.clone();
@@ -666,6 +666,35 @@ impl Terminal {
                         rctl, rdbal, rdlen, rdh, rdt));
                 } else {
                     self.print_colored("BAR phys = 0, device not initialized by BIOS\n", ERR);
+                }
+            }
+
+            "syscallinfo" => {
+                // Read back the MSRs we programmed in syscall::init() and show them.
+                // Values should match exactly what was written:
+                //   EFER  bit 0 (SCE) = 1
+                //   STAR  = 0x0010_0008_0000_0000
+                //   LSTAR = address of syscall_entry (non-zero, in kernel text)
+                //   SFMASK = 0x300 (clears IF + TF on SYSCALL)
+                let (efer, star, lstar, sfmask) = unsafe {
+                    let efer  = crate::syscall::rdmsr_pub(0xC000_0080);
+                    let star  = crate::syscall::rdmsr_pub(0xC000_0081);
+                    let lstar = crate::syscall::rdmsr_pub(0xC000_0082);
+                    let sfmask= crate::syscall::rdmsr_pub(0xC000_0084);
+                    (efer, star, lstar, sfmask)
+                };
+                let sce = if efer & 1 != 0 { "YES" } else { "NO (broken!)" };
+                self.print_colored("Syscall gate MSR readback\n", OK);
+                self.print(&alloc::format!("  EFER  SCE = {}\n", sce));
+                self.print(&alloc::format!("  STAR  = 0x{:016X}\n", star));
+                self.print(&alloc::format!("  LSTAR = 0x{:016X}  (syscall entry RIP)\n", lstar));
+                self.print(&alloc::format!("  SFMASK= 0x{:016X}  (expect 0x300)\n", sfmask));
+                let kgs: u64 = unsafe { crate::syscall::rdmsr_pub(0xC000_0102) };
+                self.print(&alloc::format!("  KGSBASE = 0x{:016X}  (per-CPU struct)\n", kgs));
+                if lstar != 0 && efer & 1 != 0 {
+                    self.print_colored("Gate is live. Ring-3 SYSCALL will land at LSTAR.\n", OK);
+                } else {
+                    self.print_colored("Gate NOT active — check syscall::init() order.\n", ERR);
                 }
             }
 
