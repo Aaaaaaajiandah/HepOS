@@ -325,7 +325,7 @@ Absolute range: 0–32767 → scaled to framebuffer resolution.
 | ✓ | Welcome window: system info, RAM, NVMe/HepFS status |
 | ✓ | Ctrl+F find in editor (highlight all matches, Enter/Ctrl+G=next, ESC=close) |
 | ○ | Multiple terminal windows |
-| ○ | Settings / system monitor window |
+| ✓ | Sysmon window — RAM bar, uptime, NVMe/net status, PCI device list |
 | ○ | Image viewer (needs std shim) |
 
 ### Networking
@@ -367,7 +367,7 @@ Absolute range: 0–32767 → scaled to framebuffer resolution.
 2. ~~**Terminal reflow on resize**~~ ✓ done
 3. **RTL8139 / networking** — test on Linux/KVM; if confirmed working there, QEMU Windows is a known non-issue
 4. ~~**Indirect blocks in HepFS**~~ ✓ done
-5. **Settings / sysmon window** — real-time RAM graph, uptime, connected PCI devices list
+5. ~~**Settings / sysmon window**~~ ✓ done
 6. **std shim** — implement enough of `std` (alloc, io, fs) to link external Rust crates
 7. **Intel HDA audio** — enumerate HDA via PCI, play PCM samples; pair with a simple beep/music app
 8. **Userspace / ring 3** — SYSCALL/SYSRET gate, per-process page tables, ELF loader, basic shell process

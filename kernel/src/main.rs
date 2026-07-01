@@ -42,6 +42,9 @@ pub static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 pub static FOCUSED_WIN: Mutex<Option<usize>> = Mutex::new(None);
 pub static PCI_DEVS: Mutex<alloc::vec::Vec<pci::PciDevice>> = Mutex::new(alloc::vec::Vec::new());
 
+// Frame counter for uptime (~60 fps → divide by 60 for seconds)
+static UPTIME_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 // HepFS navigator state (current directory + back/forward history)
 struct HepfsNav {
     ino:  u32,
@@ -131,6 +134,8 @@ extern "C" fn kmain() -> ! {
         dt.add_window("Terminal",         20,  240, 580, 200);
         // Editor window (id=3) — hidden until `edit` command opens a file
         dt.add_window("Editor",           60,  40,  580, 380);
+        // Sysmon window (id=4) — hidden until opened from start menu
+        dt.add_window("Sysmon",           80,  60,  340, 260);
         *desktop::DESKTOP.lock() = Some(dt);
     }
 
@@ -146,12 +151,14 @@ extern "C" fn kmain() -> ! {
         fwd:  alloc::vec::Vec::new(),
     });
 
-    // Minimize editor until a file is opened; focus terminal (id=2)
+    // Minimize editor and sysmon until explicitly opened; focus terminal (id=2)
     {
         let mut dt = desktop::DESKTOP.lock();
         if let Some(dt) = dt.as_mut() {
-            if let Some(w) = dt.windows.iter_mut().find(|w| w.id == 3) {
-                w.minimized = true;
+            for id in [3usize, 4] {
+                if let Some(w) = dt.windows.iter_mut().find(|w| w.id == id) {
+                    w.minimized = true;
+                }
             }
         }
     }
@@ -565,6 +572,7 @@ fn task_blink() -> ! {
                                 ed.render(display, wx, wy, *ww, *wh);
                             }
                         }
+                        4 => render_sysmon_window(display),
                         _ => {}
                     }
                 }
@@ -591,6 +599,8 @@ fn task_blink() -> ! {
                 }
             }
         }
+
+        UPTIME_FRAMES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
         // ~60fps
         for _ in 0..1_200_000 { core::hint::spin_loop(); }
@@ -720,6 +730,107 @@ fn write_num(n: u64, buf: &mut [u8; 12], suffix: &str) {
     for &b in num_bytes { if pos < 12 { buf[pos] = b; pos += 1; } }
     buf[pos] = b' '; pos += 1;
     for b in suffix.bytes() { if pos < 12 { buf[pos] = b; pos += 1; } }
+}
+
+fn render_sysmon_window(display: &mut framebuffer::Display) {
+    let Some((wx, wy, ww, wh)) = window_rect("Sysmon") else { return; };
+    let bg     = framebuffer::Color::from_hex(0x0C0C0C);
+    let acc    = framebuffer::Color::from_hex(0x6C8EFF);
+    let text   = framebuffer::Color::from_hex(0xE8E8E8);
+    let dim    = framebuffer::Color::from_hex(0x666688);
+    let ok     = framebuffer::Color::from_hex(0x6BFF8E);
+    let warn   = framebuffer::Color::from_hex(0xFF9944);
+    let red    = framebuffer::Color::from_hex(0xFF6B6B);
+    let bar_bg = framebuffer::Color::from_hex(0x1A1A2E);
+
+    display.fill_rect(wx, wy, ww, wh, bg);
+    display.fill_rect(wx, wy, ww, 2, acc);
+
+    let mut y = wy + 6;
+    let x = wx + 4;
+
+    // ── RAM bar ──────────────────────────────────────────────────────────────
+    let free_mb  = pmm::free_pages() * 4 / 1024;
+    let total_mb = pmm::total_pages() * 4 / 1024;
+    let used_mb  = total_mb.saturating_sub(free_mb);
+    display.draw_text(x, y, "RAM", acc, 1);
+    let bar_x = x + 32;
+    let bar_w = ww.saturating_sub(40).min(240);
+    let bar_h = 10usize;
+    display.fill_rect(bar_x, y, bar_w, bar_h, bar_bg);
+    if total_mb > 0 {
+        let pct  = used_mb * 100 / total_mb;
+        let fill = (used_mb * bar_w as u64 / total_mb) as usize;
+        let bar_col = if pct > 80 { red } else if pct > 60 { warn } else { ok };
+        display.fill_rect(bar_x, y, fill, bar_h, bar_col);
+    }
+    y += bar_h + 2;
+    let mem_line = alloc::format!("    {} MB used / {} MB total", used_mb, total_mb);
+    display.draw_text(x, y, &mem_line, dim, 1);
+    y += 13;
+
+    // ── Uptime ───────────────────────────────────────────────────────────────
+    display.fill_rect(x, y, ww.saturating_sub(8), 1, framebuffer::Color::from_hex(0x1A1A30));
+    y += 4;
+    let frames  = UPTIME_FRAMES.load(core::sync::atomic::Ordering::Relaxed);
+    let secs    = frames / 60;
+    let mins    = secs / 60;
+    let hours   = mins / 60;
+    let mut tbuf = [0u8; 32];
+    let uptime_str = fmt_hms(hours, mins % 60, secs % 60, &mut tbuf);
+    display.draw_text(x, y, "Uptime", acc, 1);
+    display.draw_text(x + 56, y, uptime_str, text, 1);
+    y += 13;
+
+    // ── System info ──────────────────────────────────────────────────────────
+    display.draw_text(x, y, "CPU    x86_64  APIC x2APIC", dim, 1);   y += 13;
+
+    let has_nvme = nvme::CONTROLLER.lock().is_some();
+    let nvme_str = if has_nvme { "NVMe OK" } else { "NVMe --" };
+    let nvme_col = if has_nvme { ok } else { dim };
+    display.draw_text(x, y, "Storage", acc, 1);
+    display.draw_text(x + 60, y, nvme_str, nvme_col, 1);
+    display.draw_text(x + 130, y, "HepFS OK", ok, 1);
+    y += 13;
+
+    let has_nic = rtl8139::NIC.lock().is_some() || e1000::NIC.lock().is_some();
+    let net_str = if has_nic { "eth0 up  10.0.2.15" } else { "no NIC" };
+    let net_col = if has_nic { ok } else { dim };
+    display.draw_text(x, y, "Net", acc, 1);
+    display.draw_text(x + 32, y, net_str, net_col, 1);
+    y += 13;
+
+    // ── PCI devices ──────────────────────────────────────────────────────────
+    display.fill_rect(x, y, ww.saturating_sub(8), 1, framebuffer::Color::from_hex(0x1A1A30));
+    y += 4;
+    display.draw_text(x, y, "PCI", acc, 1);
+    y += 12;
+    let devs = PCI_DEVS.lock();
+    for d in devs.iter() {
+        if y + 10 > wy + wh { break; }
+        let line = alloc::format!("{:02X}:{:02X}.{} {:04X}:{:04X} {}",
+            d.bus, d.dev, d.func, d.vendor_id, d.device_id,
+            pci::class_name(d.class, d.subclass));
+        // Truncate to fit window
+        let max_chars = (ww.saturating_sub(10)) / 9;
+        let trimmed = if line.len() > max_chars { &line[..max_chars] } else { &line };
+        display.draw_text(x, y, trimmed, dim, 1);
+        y += 11;
+    }
+    if devs.is_empty() {
+        display.draw_text(x, y, "(none)", dim, 1);
+    }
+}
+
+fn fmt_hms<'a>(h: u64, m: u64, s: u64, buf: &'a mut [u8; 32]) -> &'a str {
+    let digits = |n: u64, buf: &mut [u8], off: usize| {
+        buf[off]     = b'0' + (n / 10) as u8;
+        buf[off + 1] = b'0' + (n % 10) as u8;
+    };
+    digits(h, buf, 0); buf[2] = b':';
+    digits(m, buf, 3); buf[5] = b':';
+    digits(s, buf, 6);
+    core::str::from_utf8(&buf[..8]).unwrap_or("00:00:00")
 }
 
 fn render_welcome_window(display: &mut framebuffer::Display) {
